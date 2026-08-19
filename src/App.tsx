@@ -12,6 +12,7 @@ import { CreateAnnouncementModal } from './components/announcement/CreateAnnounc
 import { ModerationModal } from './components/admin/ModerationModal';
 import { ShareModal } from './components/announcement/ShareModal';
 import { AuthModal } from './components/auth/AuthModal';
+import { ShieldCheck, KeyRound } from 'lucide-react';
 
 type AppView = 'home' | 'farha' | 'tarha' | 'fazaa' | 'archive' | 'admin';
 
@@ -29,22 +30,44 @@ function AppContent() {
   const storage = StorageService.getInstance();
   const stats = storage.getStatistics();
 
-  // Listen to hash changes for deep linking to /#announcement-XXXX
+  // Listen to hash and pathname for public deep linking (/announcement/:id or /#announcement-:id)
   useEffect(() => {
-    const handleHashChange = () => {
+    const handleUrlChange = () => {
       const hash = window.location.hash;
+      const pathname = window.location.pathname;
+
+      let annId: string | null = null;
       if (hash && hash.startsWith('#announcement-')) {
-        const id = hash.replace('#announcement-', '');
-        const ann = storage.getAnnouncementById(id);
+        annId = hash.replace('#announcement-', '');
+      } else if (pathname.includes('/announcement/')) {
+        const parts = pathname.split('/announcement/');
+        if (parts[1]) {
+          annId = parts[1].split('/')[0];
+        }
+      }
+
+      if (annId) {
+        const ann = storage.getAnnouncementById(annId);
         if (ann) {
           setSelectedAnnouncement(ann);
         }
       }
     };
 
-    handleHashChange();
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    handleUrlChange();
+    window.addEventListener('hashchange', handleUrlChange);
+    window.addEventListener('popstate', handleUrlChange);
+
+    // Also subscribe to storage changes so if deep linked announcement loads asynchronously, it gets selected
+    const unsub = storage.subscribe(() => {
+      handleUrlChange();
+    });
+
+    return () => {
+      window.removeEventListener('hashchange', handleUrlChange);
+      window.removeEventListener('popstate', handleUrlChange);
+      unsub();
+    };
   }, []);
 
   const triggerRefresh = () => {
@@ -63,7 +86,6 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-[#FDFBF7] text-[#1A2B3C] flex flex-col font-cairo antialiased" dir="rtl">
-      
       {/* Header Navigation */}
       <Header
         activeView={currentView}
@@ -75,7 +97,6 @@ function AppContent() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-        
         {/* VIEW 1: HOME */}
         {currentView === 'home' && (
           <HomeView
@@ -133,18 +154,39 @@ function AppContent() {
 
         {/* VIEW 6: ADMIN & MODERATION DASHBOARD */}
         {currentView === 'admin' && (
-          <AdminDashboard
-            onSelectAnnouncement={(ann) => setSelectedAnnouncement(ann)}
-            onRefreshData={triggerRefresh}
-          />
+          <>
+            {isModerator ? (
+              <AdminDashboard
+                onSelectAnnouncement={(ann) => setSelectedAnnouncement(ann)}
+                onRefreshData={triggerRefresh}
+              />
+            ) : (
+              <div className="bg-white rounded-[32px] p-8 sm:p-12 border border-[#E2E8F0] text-center max-w-lg mx-auto shadow-sm space-y-4">
+                <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                  <ShieldCheck className="w-8 h-8" />
+                </div>
+                <h2 className="text-xl font-black text-[#0F172A]">لوحة إدارة المنظومة مقيدة</h2>
+                <p className="text-xs text-[#64748B] leading-relaxed">
+                  هذه المنطقة مخصصة حصراً للمشرفين والمدراء المعتمدين لمراجعة وتدقيق إعلانات قلقيلية والتحكم في بث الواتساب.
+                </p>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsAuthModalOpen(true)}
+                    className="w-full py-3 bg-[#0F172A] hover:bg-[#1e293b] text-white font-bold rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <KeyRound className="w-4 h-4 text-[#F27D26]" />
+                    <span>تسجيل الدخول كـ مشرف / مدير</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </main>
 
       {/* Footer */}
-      <Footer
-        onNavigate={handleNavigate}
-        onOpenCreate={handleOpenCreate}
-      />
+      <Footer onNavigate={handleNavigate} onOpenCreate={handleOpenCreate} />
 
       {/* MODALS */}
 

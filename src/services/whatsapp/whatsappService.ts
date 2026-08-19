@@ -1,50 +1,51 @@
-import { doc, getDocs, collection, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, collection, setDoc, onSnapshot, deleteDoc, getDocs } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase/config';
 import { Announcement, CategoryType, WhatsAppConfig, WhatsAppMessageLog } from '../../types';
 import { WhatsAppFormatter } from './formatter';
 
+// Environment variables with fallback
+const metaEnv = (import.meta as unknown as { env?: Record<string, string> }).env || {};
+const ENV_MODE = (metaEnv.VITE_WHATSAPP_MODE || 'mock') as 'mock' | 'production';
+const ENV_TEST_PHONE = metaEnv.VITE_TEST_WHATSAPP_NUMBER || '+962788019331';
+
 const DEFAULT_CONFIG: WhatsAppConfig = {
-  mode: 'mock',
-  testPhoneNumber: '+962788019331',
-  connectionStatus: 'mock_active',
+  mode: ENV_MODE === 'production' ? 'production' : 'mock',
+  testPhoneNumber: ENV_TEST_PHONE,
+  connectionStatus: ENV_MODE === 'production' ? 'disconnected' : 'mock_active',
   groups: {
     farha: {
       id: 'group_farha_qalqilya_01',
-      name: 'بوق البلد - أفراح قلقيلية (الرسمية)',
-      description: 'المجموعة المخصصة لأخبار ومناسبات الفرح والتهاني في قلقيلية',
-      inviteLink: 'https://chat.whatsapp.com/sampleFarhaGroupQalqilya',
+      name: 'بوق البلد - أفراح قلقيلية (المجموعة الرسمية الوحيدة)',
+      description: 'المجموعة الرسمية المعتمدة لأخبار ومناسبات الفرح والتهاني في قلقيلية',
+      inviteLink: 'https://chat.whatsapp.com/farha-qalqilya-official',
       isActive: true,
     },
     tarha: {
       id: 'group_tarha_qalqilya_02',
-      name: 'بوق البلد - وفيات وتعازي قلقيلية (الرسمية)',
-      description: 'المجموعة المخصصة لإعلانات الوفيات ومواعيد الدفن وبيوت العزاء في قلقيلية',
-      inviteLink: 'https://chat.whatsapp.com/sampleTarhaGroupQalqilya',
+      name: 'بوق البلد - وفيات وتعازي قلقيلية (المجموعة الرسمية الوحيدة)',
+      description: 'المجموعة الرسمية المعتمدة لإعلانات الوفيات ومواعيد الدفن وبيوت العزاء في قلقيلية',
+      inviteLink: 'https://chat.whatsapp.com/tarha-qalqilya-official',
       isActive: true,
     },
     fazaa: {
       id: 'group_fazaa_qalqilya_03',
-      name: 'بوق البلد - فزعة ونداءات قلقيلية (الرسمية)',
-      description: 'المجموعة المخصصة لنداءات التبرع بالدم، الجاهات، الصلح العشائري والإغاثة الطارئة',
-      inviteLink: 'https://chat.whatsapp.com/sampleFazaaGroupQalqilya',
+      name: 'بوق البلد - فزعة ونداءات قلقيلية (المجموعة الرسمية الوحيدة)',
+      description: 'المجموعة الرسمية المعتمدة لنداءات التبرع بالدم، الجاهات، والصلح العشائري والإغاثة الطارئة',
+      inviteLink: 'https://chat.whatsapp.com/fazaa-qalqilya-official',
       isActive: true,
     },
   },
 };
 
-const STORAGE_KEY_CONFIG = 'booq_whatsapp_config_v1';
-const STORAGE_KEY_LOGS = 'booq_whatsapp_logs_v1';
-
 export class WhatsAppService {
   private static instance: WhatsAppService;
-  private config: WhatsAppConfig;
+  private config: WhatsAppConfig = DEFAULT_CONFIG;
   private logs: WhatsAppMessageLog[] = [];
-  private isFirestoreInitialized = false;
+  private isInitialized = false;
+  private subscribers: (() => void)[] = [];
 
   private constructor() {
-    this.config = this.loadConfig();
-    this.logs = this.loadLogs();
-    this.initFirestoreLogs();
+    this.initFirestoreSync();
   }
 
   public static getInstance(): WhatsAppService {
@@ -54,80 +55,79 @@ export class WhatsAppService {
     return WhatsAppService.instance;
   }
 
-  private loadConfig(): WhatsAppConfig {
+  private async initFirestoreSync() {
+    if (this.isInitialized) return;
+    this.isInitialized = true;
+
+    // 1. Sync config from Firestore
     try {
-      const stored = localStorage.getItem(STORAGE_KEY_CONFIG);
-      if (stored) {
-        return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
-      }
-    } catch {
-      // Fallback
+      onSnapshot(
+        doc(db, 'systemSettings', 'whatsapp_config'),
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            if (data?.config) {
+              this.config = { ...DEFAULT_CONFIG, ...data.config };
+              this.notify();
+            }
+          }
+        },
+        (err) => {
+          console.warn('WhatsApp config Firestore listener notice:', err.message);
+        }
+      );
+    } catch (e) {
+      console.warn('WhatsApp config initial listener setup', e);
     }
-    return DEFAULT_CONFIG;
+
+    // 2. Real-time sync logs from Firestore collection
+    try {
+      onSnapshot(
+        collection(db, 'whatsappMessages'),
+        (snapshot) => {
+          const list: WhatsAppMessageLog[] = [];
+          snapshot.forEach((docSnap) => {
+            list.push(docSnap.data() as WhatsAppMessageLog);
+          });
+          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          this.logs = list;
+          this.notify();
+        },
+        (error) => {
+          console.warn('WhatsApp logs Firestore sync notice:', error.message);
+        }
+      );
+    } catch (e) {
+      console.warn('Error syncing whatsappMessages', e);
+    }
   }
 
-  public saveConfig(newConfig: WhatsAppConfig): void {
-    this.config = newConfig;
-    try {
-      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(newConfig));
-      setDoc(doc(db, 'systemSettings', 'whatsapp_config'), {
-        id: 'whatsapp_config',
-        config: newConfig,
-        updatedAt: new Date().toISOString(),
-      }).catch((err) => handleFirestoreError(err, OperationType.WRITE, 'systemSettings/whatsapp_config'));
-    } catch (e) {
-      console.error('Failed to save WhatsApp config', e);
-    }
+  public subscribe(callback: () => void): () => void {
+    this.subscribers.push(callback);
+    return () => {
+      this.subscribers = this.subscribers.filter((cb) => cb !== callback);
+    };
+  }
+
+  private notify() {
+    this.subscribers.forEach((cb) => cb());
   }
 
   public getConfig(): WhatsAppConfig {
     return { ...this.config };
   }
 
-  private loadLogs(): WhatsAppMessageLog[] {
+  public async saveConfig(newConfig: WhatsAppConfig): Promise<void> {
+    this.config = newConfig;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY_LOGS);
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch {
-      // Fallback
-    }
-    return [];
-  }
-
-  private saveLogs(): void {
-    try {
-      localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(this.logs));
-    } catch (e) {
-      console.error('Failed to save WhatsApp logs', e);
-    }
-  }
-
-  private async initFirestoreLogs() {
-    if (this.isFirestoreInitialized) return;
-    this.isFirestoreInitialized = true;
-
-    try {
-      onSnapshot(
-        collection(db, 'whatsappMessages'),
-        (snapshot) => {
-          if (!snapshot.empty) {
-            const list: WhatsAppMessageLog[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as WhatsAppMessageLog);
-            });
-            list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            this.logs = list;
-            this.saveLogs();
-          }
-        },
-        (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'whatsappMessages');
-        }
-      );
-    } catch (e) {
-      console.warn('Error setting up whatsappMessages listener', e);
+      await setDoc(doc(db, 'systemSettings', 'whatsapp_config'), {
+        id: 'whatsapp_config',
+        config: newConfig,
+        updatedAt: new Date().toISOString(),
+      });
+      this.notify();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'systemSettings/whatsapp_config');
     }
   }
 
@@ -135,9 +135,17 @@ export class WhatsAppService {
     return [...this.logs];
   }
 
-  public clearLogs(): void {
+  public async clearLogs(): Promise<void> {
     this.logs = [];
-    this.saveLogs();
+    this.notify();
+    try {
+      const snap = await getDocs(collection(db, 'whatsappMessages'));
+      for (const d of snap.docs) {
+        await deleteDoc(d.ref);
+      }
+    } catch (err) {
+      console.warn('Could not delete all logs from Firestore', err);
+    }
   }
 
   public getDestinationForCategory(category: CategoryType) {
@@ -145,17 +153,19 @@ export class WhatsAppService {
   }
 
   /**
-   * Send new announcement to designated single WhatsApp group
+   * Dispatch announcement to the designated single WhatsApp group
    */
   public async sendAnnouncementToGroup(
     announcement: Announcement
-  ): Promise<{ success: boolean; messageId: string; messageBody: string; error?: string }> {
+  ): Promise<{ success: boolean; isMock: boolean; messageId: string; messageBody: string; error?: string }> {
     const destination = this.config.groups[announcement.category];
     const messageBody = WhatsAppFormatter.formatMessage(announcement, false);
     const messageId = `msg_wa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
 
+    // MOCK MODE
     if (this.config.mode === 'mock') {
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      await new Promise((res) => setTimeout(res, 600));
 
       const logEntry: WhatsAppMessageLog = {
         id: messageId,
@@ -164,151 +174,167 @@ export class WhatsAppService {
         groupName: destination.name,
         destinationGroupId: destination.id,
         messageBody,
-        timestamp: new Date().toISOString(),
+        timestamp: now,
         status: 'simulated',
       };
 
-      this.logs.unshift(logEntry);
-      this.saveLogs();
-
-      // Persist to Firestore
-      setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
-        handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
-      );
+      try {
+        await setDoc(doc(db, 'whatsappMessages', messageId), logEntry);
+      } catch (err) {
+        console.warn('Could not write mock log to Firestore', err);
+      }
 
       return {
         success: true,
+        isMock: true,
         messageId,
         messageBody,
       };
-    } else {
-      // Production Meta Cloud API
-      try {
-        const logEntry: WhatsAppMessageLog = {
-          id: messageId,
-          announcementId: announcement.id,
-          category: announcement.category,
-          groupName: destination.name,
-          destinationGroupId: destination.id,
-          messageBody,
-          timestamp: new Date().toISOString(),
-          status: 'delivered',
-        };
-        this.logs.unshift(logEntry);
-        this.saveLogs();
-
-        setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
-          handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
-        );
-
-        return { success: true, messageId, messageBody };
-      } catch (err: unknown) {
-        const errorMsg = err instanceof Error ? err.message : 'Unknown Meta API error';
-        const logEntry: WhatsAppMessageLog = {
-          id: messageId,
-          announcementId: announcement.id,
-          category: announcement.category,
-          groupName: destination.name,
-          destinationGroupId: destination.id,
-          messageBody,
-          timestamp: new Date().toISOString(),
-          status: 'failed',
-          errorMessage: errorMsg,
-        };
-        this.logs.unshift(logEntry);
-        this.saveLogs();
-
-        setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
-          handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
-        );
-
-        return { success: false, messageId, messageBody, error: errorMsg };
-      }
     }
-  }
 
-  /**
-   * Send updated announcement with notice
-   */
-  public async sendAnnouncementUpdate(
-    announcement: Announcement
-  ): Promise<{ success: boolean; messageId: string; messageBody: string; error?: string }> {
-    const destination = this.config.groups[announcement.category];
-    const messageBody = WhatsAppFormatter.formatMessage(announcement, true);
-    const messageId = `msg_wa_upd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    // PRODUCTION MODE (Meta Cloud API)
+    // In production without server-side tokens, refuse to fake delivery.
+    const errorMessage =
+      'تكامل WhatsApp الإنتاجي غير مهيأ بعد. لم يتم إرسال رسالة حقيقية (يرجى ضبط بيانات اعتماد Meta API على الخادم). تم حفظ ونشر الإعلان على المنصة بأمان.';
 
-    await new Promise((resolve) => setTimeout(resolve, 600));
-
-    const logEntry: WhatsAppMessageLog = {
+    const failLog: WhatsAppMessageLog = {
       id: messageId,
       announcementId: announcement.id,
       category: announcement.category,
       groupName: destination.name,
       destinationGroupId: destination.id,
       messageBody,
-      timestamp: new Date().toISOString(),
-      status: this.config.mode === 'mock' ? 'simulated' : 'delivered',
-      isUpdate: true,
+      timestamp: now,
+      status: 'failed',
+      errorMessage,
     };
 
-    this.logs.unshift(logEntry);
-    this.saveLogs();
-
-    setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
-    );
+    try {
+      await setDoc(doc(db, 'whatsappMessages', messageId), failLog);
+    } catch (err) {
+      console.warn('Could not write fail log to Firestore', err);
+    }
 
     return {
-      success: true,
+      success: false,
+      isMock: false,
       messageId,
       messageBody,
+      error: errorMessage,
     };
   }
 
   /**
-   * Send test message
+   * Dispatch announcement update notice to the single designated group
    */
-  public async sendTestMessage(
-    testNumber: string = this.config.testPhoneNumber
-  ): Promise<{ success: boolean; previewMessage: string }> {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const testMsg = `🧪 *بوق البلد - رسالة تجريبية لاختبار الاتصال*\n\nهذه رسالة اختبار لخدمة بوق البلد للتأكد من جاهزية قناة البث.\nالوقت: ${new Date().toLocaleTimeString('ar-EG')}\nالرقم التجريبي: ${testNumber}\nالحالة: الاتصال نشط والمنظومة جاهزة.`;
+  public async sendAnnouncementUpdate(
+    announcement: Announcement
+  ): Promise<{ success: boolean; isMock: boolean; messageId: string; messageBody: string; error?: string }> {
+    const destination = this.config.groups[announcement.category];
+    const messageBody = WhatsAppFormatter.formatMessage(announcement, true);
+    const messageId = `msg_wa_upd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
 
-    const logEntry: WhatsAppMessageLog = {
-      id: `test_${Date.now()}`,
-      announcementId: 'TEST_PING',
-      category: 'farha',
-      groupName: `رقم الاختبار: ${testNumber}`,
-      destinationGroupId: testNumber,
-      messageBody: testMsg,
-      timestamp: new Date().toISOString(),
-      status: this.config.mode === 'mock' ? 'simulated' : 'delivered',
+    if (this.config.mode === 'mock') {
+      await new Promise((res) => setTimeout(res, 500));
+
+      const logEntry: WhatsAppMessageLog = {
+        id: messageId,
+        announcementId: announcement.id,
+        category: announcement.category,
+        groupName: destination.name,
+        destinationGroupId: destination.id,
+        messageBody,
+        timestamp: now,
+        status: 'simulated',
+        isUpdate: true,
+      };
+
+      try {
+        await setDoc(doc(db, 'whatsappMessages', messageId), logEntry);
+      } catch (err) {
+        console.warn('Failed saving update log to Firestore', err);
+      }
+
+      return {
+        success: true,
+        isMock: true,
+        messageId,
+        messageBody,
+      };
+    }
+
+    const errorMessage =
+      'تكامل WhatsApp الإنتاجي غير مهيأ بعد. يرجى ضبط بيانات اعتماد Meta API.';
+
+    const failLog: WhatsAppMessageLog = {
+      id: messageId,
+      announcementId: announcement.id,
+      category: announcement.category,
+      groupName: destination.name,
+      destinationGroupId: destination.id,
+      messageBody,
+      timestamp: now,
+      status: 'failed',
+      errorMessage,
+      isUpdate: true,
     };
 
-    this.logs.unshift(logEntry);
-    this.saveLogs();
-
-    setDoc(doc(db, 'whatsappMessages', logEntry.id), logEntry).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${logEntry.id}`)
-    );
-
-    this.config.lastTestedAt = new Date().toISOString();
-    this.saveConfig(this.config);
+    try {
+      await setDoc(doc(db, 'whatsappMessages', messageId), failLog);
+    } catch (err) {
+      console.warn('Failed saving fail log', err);
+    }
 
     return {
-      success: true,
-      previewMessage: testMsg,
+      success: false,
+      isMock: false,
+      messageId,
+      messageBody,
+      error: errorMessage,
     };
   }
 
-  public getGroupStatus() {
+  /**
+   * Send test connection ping
+   */
+  public async sendTestMessage(
+    testNumber: string = this.config.testPhoneNumber
+  ): Promise<{ success: boolean; isMock: boolean; previewMessage: string; error?: string }> {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const now = new Date();
+    const testMsg = `🧪 *بوق البلد - رسالة فحص الاتصال*\n\nهذه رسالة اختبار للتأكد من ربط نظام البث لمحافظة قلقيلية.\nالوقت: ${now.toLocaleTimeString('ar-EG')}\nالرقم المستهدف: ${testNumber}\nالوضع: ${
+      this.config.mode === 'mock' ? 'تجريبي (Mock Mode)' : 'إنتاجي (Meta Production)'
+    }`;
+
+    const logId = `test_${Date.now()}`;
+    const logEntry: WhatsAppMessageLog = {
+      id: logId,
+      announcementId: 'TEST_PING',
+      category: 'farha',
+      groupName: `اختبار الاتصال: ${testNumber}`,
+      destinationGroupId: testNumber,
+      messageBody: testMsg,
+      timestamp: now.toISOString(),
+      status: this.config.mode === 'mock' ? 'simulated' : 'delivered',
+    };
+
+    try {
+      await setDoc(doc(db, 'whatsappMessages', logId), logEntry);
+    } catch (err) {
+      console.warn('Failed saving test log', err);
+    }
+
+    const updatedConfig = {
+      ...this.config,
+      lastTestedAt: now.toISOString(),
+    };
+    this.saveConfig(updatedConfig);
+
     return {
-      mode: this.config.mode,
-      connectionStatus: this.config.connectionStatus,
-      lastTestedAt: this.config.lastTestedAt,
-      groups: this.config.groups,
-      testPhoneNumber: this.config.testPhoneNumber,
-      totalDeliveredLogs: this.logs.length,
+      success: true,
+      isMock: this.config.mode === 'mock',
+      previewMessage: testMsg,
     };
   }
 }

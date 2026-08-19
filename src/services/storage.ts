@@ -6,9 +6,6 @@ import {
   updateDoc,
   deleteDoc,
   onSnapshot,
-  query,
-  orderBy,
-  where,
   getDoc,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase/config';
@@ -16,20 +13,16 @@ import { Announcement, AnnouncementStatus, CategoryType, ModeratorActionLog, Use
 import { INITIAL_ANNOUNCEMENTS, INITIAL_USERS } from '../data/seedData';
 import { WhatsAppService } from './whatsapp/whatsappService';
 
-const STORAGE_KEY_ANNOUNCEMENTS = 'booq_announcements_v1';
-const STORAGE_KEY_USERS = 'booq_users_v1';
-const STORAGE_KEY_AUDIT = 'booq_audit_logs_v1';
-
 export class StorageService {
   private static instance: StorageService;
   private announcements: Announcement[] = [];
   private users: User[] = [];
   private auditLogs: ModeratorActionLog[] = [];
-  private listeners: (() => void)[] = [];
-  private isInitialized = false;
+  private subscribers: (() => void)[] = [];
+  private isFirestoreSynced = false;
+  private isSeeding = false;
 
   private constructor() {
-    this.initLocalCache();
     this.initFirestoreSync();
   }
 
@@ -40,60 +33,31 @@ export class StorageService {
     return StorageService.instance;
   }
 
-  private initLocalCache() {
-    try {
-      const storedAnn = localStorage.getItem(STORAGE_KEY_ANNOUNCEMENTS);
-      this.announcements = storedAnn ? JSON.parse(storedAnn) : [...INITIAL_ANNOUNCEMENTS];
-    } catch {
-      this.announcements = [...INITIAL_ANNOUNCEMENTS];
-    }
-
-    try {
-      const storedUsers = localStorage.getItem(STORAGE_KEY_USERS);
-      this.users = storedUsers ? JSON.parse(storedUsers) : [...INITIAL_USERS];
-    } catch {
-      this.users = [...INITIAL_USERS];
-    }
-
-    try {
-      const storedAudit = localStorage.getItem(STORAGE_KEY_AUDIT);
-      this.auditLogs = storedAudit ? JSON.parse(storedAudit) : [];
-    } catch {
-      this.auditLogs = [];
-    }
-  }
-
-  private persistLocal() {
-    try {
-      localStorage.setItem(STORAGE_KEY_ANNOUNCEMENTS, JSON.stringify(this.announcements));
-      localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(this.users));
-      localStorage.setItem(STORAGE_KEY_AUDIT, JSON.stringify(this.auditLogs));
-    } catch (e) {
-      console.warn('Could not persist to localStorage', e);
-    }
-  }
-
   /**
-   * Subscribe to live Firestore collections and seed initial records if empty
+   * Connect to Firestore collections and sync in real time
    */
   private async initFirestoreSync() {
-    if (this.isInitialized) return;
-    this.isInitialized = true;
+    if (this.isFirestoreSynced) return;
+    this.isFirestoreSynced = true;
 
+    // 1. Initial check & seed Firestore if collections are empty
     try {
-      // 1. Check if announcements collection has documents
       const annSnap = await getDocs(collection(db, 'announcements'));
-      if (annSnap.empty) {
-        // Seed Firestore with initial announcements
+      if (annSnap.empty && !this.isSeeding) {
+        this.isSeeding = true;
         for (const ann of INITIAL_ANNOUNCEMENTS) {
           await setDoc(doc(db, 'announcements', ann.id), {
             ...ann,
             isDemo: true,
           });
         }
+        this.isSeeding = false;
       }
+    } catch (err) {
+      console.warn('Firestore initial announcements check:', err);
+    }
 
-      // 2. Check users collection
+    try {
       const usersSnap = await getDocs(collection(db, 'users'));
       if (usersSnap.empty) {
         for (const u of INITIAL_USERS) {
@@ -101,86 +65,72 @@ export class StorageService {
         }
       }
     } catch (err) {
-      console.warn('Initial Firestore seeding check had an error or is offline', err);
+      console.warn('Firestore initial users check:', err);
     }
 
-    // 3. Attach real-time snapshot listener for announcements
+    // 2. Real-time onSnapshot for Announcements
     try {
-      const unsubAnn = onSnapshot(
+      onSnapshot(
         collection(db, 'announcements'),
         (snapshot) => {
-          if (!snapshot.empty) {
-            const list: Announcement[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as Announcement);
-            });
-            // Sort by createdAt descending
-            list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-            this.announcements = list;
-            this.persistLocal();
-            this.notifyChange();
-          }
+          const list: Announcement[] = [];
+          snapshot.forEach((docSnap) => {
+            list.push(docSnap.data() as Announcement);
+          });
+          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          this.announcements = list;
+          this.notifyChange();
         },
         (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'announcements');
+          console.warn('Firestore announcements listener notice:', error.message);
         }
       );
-      this.listeners.push(unsubAnn);
     } catch (err) {
-      console.warn('Error setting up announcements real-time listener', err);
+      console.warn('Error attaching announcements listener', err);
     }
 
-    // 4. Attach real-time listener for users
+    // 3. Real-time onSnapshot for Users
     try {
-      const unsubUsers = onSnapshot(
+      onSnapshot(
         collection(db, 'users'),
         (snapshot) => {
-          if (!snapshot.empty) {
-            const list: User[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as User);
-            });
-            this.users = list;
-            this.persistLocal();
-            this.notifyChange();
-          }
+          const list: User[] = [];
+          snapshot.forEach((docSnap) => {
+            list.push(docSnap.data() as User);
+          });
+          this.users = list;
+          this.notifyChange();
         },
         (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'users');
+          console.warn('Firestore users listener notice:', error.message);
         }
       );
-      this.listeners.push(unsubUsers);
     } catch (err) {
-      console.warn('Error setting up users real-time listener', err);
+      console.warn('Error attaching users listener', err);
     }
 
-    // 5. Attach real-time listener for audit logs
+    // 4. Real-time onSnapshot for Moderation Actions
     try {
-      const unsubAudit = onSnapshot(
+      onSnapshot(
         collection(db, 'moderationActions'),
         (snapshot) => {
-          if (!snapshot.empty) {
-            const list: ModeratorActionLog[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as ModeratorActionLog);
-            });
-            list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            this.auditLogs = list;
-            this.persistLocal();
-            this.notifyChange();
-          }
+          const list: ModeratorActionLog[] = [];
+          snapshot.forEach((docSnap) => {
+            list.push(docSnap.data() as ModeratorActionLog);
+          });
+          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          this.auditLogs = list;
+          this.notifyChange();
         },
         (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'moderationActions');
+          console.warn('Firestore moderationActions listener notice:', error.message);
         }
       );
-      this.listeners.push(unsubAudit);
     } catch (err) {
-      console.warn('Error setting up audit real-time listener', err);
+      console.warn('Error attaching audit listener', err);
     }
   }
 
-  private subscribers: (() => void)[] = [];
   public subscribe(callback: () => void): () => void {
     this.subscribers.push(callback);
     return () => {
@@ -193,25 +143,17 @@ export class StorageService {
   }
 
   public async resetToSeedData(): Promise<void> {
-    this.announcements = [...INITIAL_ANNOUNCEMENTS];
-    this.users = [...INITIAL_USERS];
-    this.auditLogs = [];
-    this.persistLocal();
-
     try {
-      // Re-seed Firestore
       for (const ann of INITIAL_ANNOUNCEMENTS) {
         await setDoc(doc(db, 'announcements', ann.id), { ...ann, isDemo: true });
       }
       for (const u of INITIAL_USERS) {
         await setDoc(doc(db, 'users', u.id), u);
       }
+      WhatsAppService.getInstance().clearLogs();
     } catch (e) {
       console.error('Failed to reset Firestore seed data', e);
     }
-
-    WhatsAppService.getInstance().clearLogs();
-    this.notifyChange();
   }
 
   // ================= Announcements queries & mutations =================
@@ -240,9 +182,9 @@ export class StorageService {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
-  public createAnnouncement(
+  public async createAnnouncement(
     announcement: Omit<Announcement, 'id' | 'createdAt' | 'updatedAt' | 'status' | 'whatsappDeliveryStatus'>
-  ): Announcement {
+  ): Promise<Announcement> {
     const newId = `ann_${announcement.category}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const now = new Date().toISOString();
 
@@ -255,77 +197,67 @@ export class StorageService {
       whatsappDeliveryStatus: 'pending',
     };
 
-    // Update local immediately
+    // Optimistic memory update
     this.announcements.unshift(created);
-    this.persistLocal();
-
-    // Increment user count
-    const user = this.users.find((u) => u.id === announcement.createdByUserId);
-    if (user) {
-      user.announcementsCount = (user.announcementsCount || 0) + 1;
-      this.persistLocal();
-      setDoc(doc(db, 'users', user.id), user).catch((err) =>
-        handleFirestoreError(err, OperationType.WRITE, `users/${user.id}`)
-      );
-    }
+    this.notifyChange();
 
     // Persist to Firestore
-    setDoc(doc(db, 'announcements', newId), created).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${newId}`)
-    );
+    try {
+      await setDoc(doc(db, 'announcements', newId), created);
 
-    this.notifyChange();
+      // Increment user announcementsCount
+      const user = this.users.find((u) => u.id === announcement.createdByUserId);
+      if (user) {
+        await updateDoc(doc(db, 'users', user.id), {
+          announcementsCount: (user.announcementsCount || 0) + 1,
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${newId}`);
+    }
+
     return created;
   }
 
-  public updateAnnouncement(
+  public async updateAnnouncement(
     id: string,
     updates: Partial<Announcement>,
     moderatorId?: string,
     reason?: string
-  ): Announcement | undefined {
-    const index = this.announcements.findIndex((a) => a.id === id);
-    if (index === -1) return undefined;
+  ): Promise<Announcement | undefined> {
+    const existing = this.announcements.find((a) => a.id === id);
+    if (!existing) return undefined;
 
-    const existing = this.announcements[index];
     const now = new Date().toISOString();
-
     const updated: Announcement = {
       ...existing,
       ...updates,
       updatedAt: now,
     };
 
-    this.announcements[index] = updated;
-    this.persistLocal();
+    try {
+      await setDoc(doc(db, 'announcements', id), updated);
 
-    // Persist to Firestore
-    setDoc(doc(db, 'announcements', id), updated).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`)
-    );
-
-    if (moderatorId) {
-      const user = this.getUserById(moderatorId);
-      const auditLog: ModeratorActionLog = {
-        id: `audit_${Date.now()}`,
-        announcementId: id,
-        announcementTitle: updated.title,
-        category: updated.category,
-        action: 'request_modification',
-        moderatorId,
-        moderatorName: user?.fullName || 'مشرف',
-        reason: reason || 'تعديل بيانات الإعلان',
-        timestamp: now,
-        whatsappDelivered: false,
-      };
-      this.auditLogs.unshift(auditLog);
-      this.persistLocal();
-      setDoc(doc(db, 'moderationActions', auditLog.id), auditLog).catch((err) =>
-        handleFirestoreError(err, OperationType.WRITE, `moderationActions/${auditLog.id}`)
-      );
+      if (moderatorId) {
+        const user = this.getUserById(moderatorId);
+        const auditLog: ModeratorActionLog = {
+          id: `audit_${Date.now()}`,
+          announcementId: id,
+          announcementTitle: updated.title,
+          category: updated.category,
+          action: 'request_modification',
+          moderatorId,
+          moderatorName: user?.fullName || 'مشرف',
+          reason: reason || 'تعديل بيانات الإعلان',
+          timestamp: now,
+          whatsappDelivered: false,
+        };
+        await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
     }
 
-    this.notifyChange();
     return updated;
   }
 
@@ -337,61 +269,54 @@ export class StorageService {
     moderatorId: string,
     moderatorName: string
   ): Promise<{ announcement: Announcement; whatsappSuccess: boolean; whatsappError?: string }> {
-    const index = this.announcements.findIndex((a) => a.id === id);
-    if (index === -1) throw new Error('الإعلان غير موجود');
+    const announcement = this.announcements.find((a) => a.id === id);
+    if (!announcement) throw new Error('الإعلان غير موجود');
 
-    const announcement = this.announcements[index];
     const now = new Date().toISOString();
 
-    // Dispatch to WhatsApp
+    // 1. Dispatch to designated single WhatsApp group
     const waResult = await WhatsAppService.getInstance().sendAnnouncementToGroup(announcement);
     const destination = WhatsAppService.getInstance().getDestinationForCategory(announcement.category);
 
-    announcement.status = 'published';
-    announcement.publishedAt = now;
-    announcement.updatedAt = now;
-    announcement.moderatorId = moderatorId;
-    announcement.moderatorName = moderatorName;
-    announcement.moderatedAt = now;
-    announcement.whatsappDeliveryStatus = waResult.success ? 'sent' : 'failed';
-    announcement.whatsappSentAt = waResult.success ? now : undefined;
-    announcement.whatsappMessageId = waResult.messageId;
-    announcement.whatsappMessageBody = waResult.messageBody;
-    announcement.whatsappGroupId = destination.id;
-    if (waResult.error) {
-      announcement.whatsappError = waResult.error;
-    }
-
-    this.announcements[index] = announcement;
-    this.persistLocal();
-
-    // Firestore update
-    await setDoc(doc(db, 'announcements', id), announcement).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`)
-    );
-
-    // Audit log
-    const auditLog: ModeratorActionLog = {
-      id: `audit_${Date.now()}`,
-      announcementId: id,
-      announcementTitle: announcement.title,
-      category: announcement.category,
-      action: 'approve',
+    const updatedAnnouncement: Announcement = {
+      ...announcement,
+      status: 'published',
+      publishedAt: now,
+      updatedAt: now,
       moderatorId,
       moderatorName,
-      timestamp: now,
-      whatsappDelivered: waResult.success,
+      moderatedAt: now,
+      whatsappDeliveryStatus: waResult.success ? 'sent' : 'failed',
+      whatsappSentAt: waResult.success ? now : undefined,
+      whatsappMessageId: waResult.messageId,
+      whatsappMessageBody: waResult.messageBody,
+      whatsappGroupId: destination.id,
+      whatsappError: waResult.error,
     };
-    this.auditLogs.unshift(auditLog);
-    this.persistLocal();
 
-    setDoc(doc(db, 'moderationActions', auditLog.id), auditLog).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `moderationActions/${auditLog.id}`)
-    );
+    // 2. Persist to Firestore
+    try {
+      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
 
-    this.notifyChange();
+      // 3. Record Audit Log
+      const auditLog: ModeratorActionLog = {
+        id: `audit_${Date.now()}`,
+        announcementId: id,
+        announcementTitle: announcement.title,
+        category: announcement.category,
+        action: 'approve',
+        moderatorId,
+        moderatorName,
+        timestamp: now,
+        whatsappDelivered: waResult.success,
+      };
+      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+    }
+
     return {
-      announcement,
+      announcement: updatedAnnouncement,
       whatsappSuccess: waResult.success,
       whatsappError: waResult.error,
     };
@@ -400,145 +325,137 @@ export class StorageService {
   /**
    * Moderator Rejection
    */
-  public rejectAnnouncement(id: string, moderatorId: string, moderatorName: string, reason: string): Announcement {
-    const index = this.announcements.findIndex((a) => a.id === id);
-    if (index === -1) throw new Error('الإعلان غير موجود');
+  public async rejectAnnouncement(
+    id: string,
+    moderatorId: string,
+    moderatorName: string,
+    reason: string
+  ): Promise<Announcement> {
+    const announcement = this.announcements.find((a) => a.id === id);
+    if (!announcement) throw new Error('الإعلان غير موجود');
 
-    const announcement = this.announcements[index];
     const now = new Date().toISOString();
-
-    announcement.status = 'rejected';
-    announcement.moderationReason = reason;
-    announcement.moderatorId = moderatorId;
-    announcement.moderatorName = moderatorName;
-    announcement.moderatedAt = now;
-    announcement.updatedAt = now;
-    announcement.whatsappDeliveryStatus = 'not_sent';
-
-    this.announcements[index] = announcement;
-    this.persistLocal();
-
-    setDoc(doc(db, 'announcements', id), announcement).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`)
-    );
-
-    const auditLog: ModeratorActionLog = {
-      id: `audit_${Date.now()}`,
-      announcementId: id,
-      announcementTitle: announcement.title,
-      category: announcement.category,
-      action: 'reject',
+    const updatedAnnouncement: Announcement = {
+      ...announcement,
+      status: 'rejected',
+      moderationReason: reason,
       moderatorId,
       moderatorName,
-      reason,
-      timestamp: now,
-      whatsappDelivered: false,
+      moderatedAt: now,
+      updatedAt: now,
+      whatsappDeliveryStatus: 'not_sent',
     };
-    this.auditLogs.unshift(auditLog);
-    this.persistLocal();
 
-    setDoc(doc(db, 'moderationActions', auditLog.id), auditLog).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `moderationActions/${auditLog.id}`)
-    );
+    try {
+      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
 
-    this.notifyChange();
-    return announcement;
+      const auditLog: ModeratorActionLog = {
+        id: `audit_${Date.now()}`,
+        announcementId: id,
+        announcementTitle: announcement.title,
+        category: announcement.category,
+        action: 'reject',
+        moderatorId,
+        moderatorName,
+        reason,
+        timestamp: now,
+        whatsappDelivered: false,
+      };
+      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+    }
+
+    return updatedAnnouncement;
   }
 
   /**
    * Moderator Requests Modification
    */
-  public requestModification(id: string, moderatorId: string, moderatorName: string, reason: string): Announcement {
-    const index = this.announcements.findIndex((a) => a.id === id);
-    if (index === -1) throw new Error('الإعلان غير موجود');
+  public async requestModification(
+    id: string,
+    moderatorId: string,
+    moderatorName: string,
+    reason: string
+  ): Promise<Announcement> {
+    const announcement = this.announcements.find((a) => a.id === id);
+    if (!announcement) throw new Error('الإعلان غير موجود');
 
-    const announcement = this.announcements[index];
     const now = new Date().toISOString();
-
-    announcement.status = 'needs_modification';
-    announcement.moderationReason = reason;
-    announcement.moderatorId = moderatorId;
-    announcement.moderatorName = moderatorName;
-    announcement.moderatedAt = now;
-    announcement.updatedAt = now;
-
-    this.announcements[index] = announcement;
-    this.persistLocal();
-
-    setDoc(doc(db, 'announcements', id), announcement).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`)
-    );
-
-    const auditLog: ModeratorActionLog = {
-      id: `audit_${Date.now()}`,
-      announcementId: id,
-      announcementTitle: announcement.title,
-      category: announcement.category,
-      action: 'request_modification',
+    const updatedAnnouncement: Announcement = {
+      ...announcement,
+      status: 'needs_modification',
+      moderationReason: reason,
       moderatorId,
       moderatorName,
-      reason,
-      timestamp: now,
-      whatsappDelivered: false,
+      moderatedAt: now,
+      updatedAt: now,
     };
-    this.auditLogs.unshift(auditLog);
-    this.persistLocal();
 
-    setDoc(doc(db, 'moderationActions', auditLog.id), auditLog).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `moderationActions/${auditLog.id}`)
-    );
+    try {
+      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
 
-    this.notifyChange();
-    return announcement;
+      const auditLog: ModeratorActionLog = {
+        id: `audit_${Date.now()}`,
+        announcementId: id,
+        announcementTitle: announcement.title,
+        category: announcement.category,
+        action: 'request_modification',
+        moderatorId,
+        moderatorName,
+        reason,
+        timestamp: now,
+        whatsappDelivered: false,
+      };
+      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+    }
+
+    return updatedAnnouncement;
   }
 
   /**
    * Mark Completed or Expired
    */
-  public markStatus(
+  public async markStatus(
     id: string,
     status: AnnouncementStatus,
     moderatorId: string,
     moderatorName: string,
     reason?: string
-  ): Announcement {
-    const index = this.announcements.findIndex((a) => a.id === id);
-    if (index === -1) throw new Error('الإعلان غير موجود');
+  ): Promise<Announcement> {
+    const announcement = this.announcements.find((a) => a.id === id);
+    if (!announcement) throw new Error('الإعلان غير موجود');
 
-    const announcement = this.announcements[index];
     const now = new Date().toISOString();
-
-    announcement.status = status;
-    announcement.updatedAt = now;
-
-    this.announcements[index] = announcement;
-    this.persistLocal();
-
-    setDoc(doc(db, 'announcements', id), announcement).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`)
-    );
-
-    const auditLog: ModeratorActionLog = {
-      id: `audit_${Date.now()}`,
-      announcementId: id,
-      announcementTitle: announcement.title,
-      category: announcement.category,
-      action: status === 'completed' ? 'complete' : 'pause',
-      moderatorId,
-      moderatorName,
-      reason: reason || `تغيير الحالة إلى ${status}`,
-      timestamp: now,
-      whatsappDelivered: false,
+    const updatedAnnouncement: Announcement = {
+      ...announcement,
+      status,
+      updatedAt: now,
     };
-    this.auditLogs.unshift(auditLog);
-    this.persistLocal();
 
-    setDoc(doc(db, 'moderationActions', auditLog.id), auditLog).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `moderationActions/${auditLog.id}`)
-    );
+    try {
+      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
 
-    this.notifyChange();
-    return announcement;
+      const auditLog: ModeratorActionLog = {
+        id: `audit_${Date.now()}`,
+        announcementId: id,
+        announcementTitle: announcement.title,
+        category: announcement.category,
+        action: status === 'completed' ? 'complete' : 'pause',
+        moderatorId,
+        moderatorName,
+        reason: reason || `تغيير الحالة إلى ${status}`,
+        timestamp: now,
+        whatsappDelivered: false,
+      };
+      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+    }
+
+    return updatedAnnouncement;
   }
 
   // ================= User operations =================
@@ -551,17 +468,18 @@ export class StorageService {
   }
 
   public getUserByPhone(phone: string): User | undefined {
-    return this.users.find((u) => u.phone === phone);
+    return this.users.find((u) => u.phone === phone.trim());
   }
 
-  public registerOrLoginUser(fullName: string, phone: string): User {
+  public async registerOrLoginUser(fullName: string, phone: string, customUid?: string): Promise<User> {
     const cleanPhone = phone.trim();
-    let user = this.users.find((u) => u.phone === cleanPhone);
+    let user = this.users.find((u) => u.phone === cleanPhone || (customUid && u.id === customUid));
 
     if (!user) {
+      const uid = customUid || `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       user = {
-        id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        fullName: fullName.trim(),
+        id: uid,
+        fullName: fullName.trim() || 'مواطن كريم',
         phone: cleanPhone,
         role: 'user',
         createdAt: new Date().toISOString(),
@@ -569,21 +487,29 @@ export class StorageService {
         status: 'active',
         verified: true,
       };
-      this.users.push(user);
-      this.persistLocal();
     } else {
       if (fullName && user.fullName !== fullName.trim()) {
-        user.fullName = fullName.trim();
-        this.persistLocal();
+        user = { ...user, fullName: fullName.trim() };
       }
     }
 
-    setDoc(doc(db, 'users', user.id), user).catch((err) =>
-      handleFirestoreError(err, OperationType.WRITE, `users/${user!.id}`)
-    );
+    try {
+      await setDoc(doc(db, 'users', user.id), user);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${user.id}`);
+    }
 
-    this.notifyChange();
     return user;
+  }
+
+  public async updateUserRole(userId: string, newRole: 'user' | 'moderator' | 'admin'): Promise<void> {
+    try {
+      await updateDoc(doc(db, 'users', userId), {
+        role: newRole,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${userId}`);
+    }
   }
 
   public getAuditLogs(): ModeratorActionLog[] {

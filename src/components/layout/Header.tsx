@@ -175,7 +175,7 @@ export const Header: React.FC<HeaderProps> = ({
                       : currentUser.role === 'moderator'
                       ? 'مشرف 🛡️'
                       : 'مواطن'
-                    : 'حساب تجريبي'}
+                    : 'تسجيل الدخول'}
                 </p>
               </div>
             </button>

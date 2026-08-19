@@ -5,7 +5,8 @@ import { StorageService } from '../../services/storage';
 import { FarhaForm } from './FarhaForm';
 import { TarhaForm } from './TarhaForm';
 import { FazaaForm } from './FazaaForm';
-import { Sparkles, HeartHandshake, Flame, CheckCircle2, ShieldCheck, X, ArrowRight } from 'lucide-react';
+import { Sparkles, HeartHandshake, Flame, CheckCircle2, ShieldCheck, X, ArrowRight, UserCheck, KeyRound } from 'lucide-react';
+import { AuthModal } from '../auth/AuthModal';
 
 interface CreateAnnouncementModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
   const [category, setCategory] = useState<CategoryType | null>(initialCategory || null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successResult, setSuccessResult] = useState<{ id: string; title: string; category: CategoryType } | null>(null);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   if (!isOpen) return null;
 
@@ -32,12 +34,16 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
     details: FarhaDetails | TarhaDetails | FazaaDetails;
     contact: ContactInfo;
   }) => {
-    if (!category || !currentUser) return;
+    if (!category) return;
+    if (!currentUser) {
+      setIsAuthOpen(true);
+      return;
+    }
     setIsSubmitting(true);
 
     try {
       const storage = StorageService.getInstance();
-      const newAnn = storage.createAnnouncement({
+      const newAnn = await storage.createAnnouncement({
         category,
         title: data.title,
         city: 'قلقيلية',
@@ -70,9 +76,8 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#0F172A]/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#0F172A]/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 text-right">
       <div className="bg-white rounded-[32px] shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col border border-[#E2E8F0] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-        
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-[#E2E8F0] flex items-center justify-between bg-[#F8FAFC]">
           <div className="flex items-center gap-2">
@@ -92,7 +97,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
               </h2>
               <p className="text-xs text-[#64748B]">
                 {successResult
-                  ? 'طلبك الآن قيد المراجعة'
+                  ? 'طلبك الآن قيد المراجعة والتدقيق'
                   : category
                   ? 'املأ النموذج بالمعلومات الدقيقة'
                   : 'اختر تصنيفاً واحداً لإعلانك (أفراحنا • أتراحنا • فزعتنا)'}
@@ -155,12 +160,36 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
                 </button>
               </div>
             </div>
+          ) : !currentUser ? (
+            /* Prompt user to authenticate first */
+            <div className="text-center py-6 sm:py-8 space-y-4 max-w-md mx-auto">
+              <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                <UserCheck className="w-8 h-8" />
+              </div>
+              <h3 className="text-lg font-black text-[#0F172A]">تسجيل الدخول مطلوب لنشر الإعلانات</h3>
+              <p className="text-xs text-[#64748B] leading-relaxed">
+                للحفاظ على مصداقية المنصة وحماية المجتمع من الإعلانات الوهمية، يرجى تسجيل الدخول بواسطة رقم هاتفك المحمول.
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsAuthOpen(true)}
+                className="w-full py-3 bg-[#F27D26] hover:bg-[#D96818] text-white font-bold rounded-xl text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+              >
+                <KeyRound className="w-4 h-4" />
+                <span>تسجيل الدخول عبر رقم الهاتف</span>
+              </button>
+            </div>
           ) : !category ? (
             /* Step 1: Category Selector (3 Choices only) */
             <div className="space-y-4 py-2">
-              <p className="text-sm text-[#64748B] font-medium text-center mb-4">
-                اختر القسم المناسب للإعلان؛ يتم توزيع كل قسم على مجموعة واتساب مخصصة:
-              </p>
+              <div className="text-center mb-6">
+                <h3 className="text-base font-black text-[#0F172A]">
+                  ما هو تصنيف إعلانك؟
+                </h3>
+                <p className="text-xs text-[#64748B] mt-1">
+                  اختر أحد التصنيفات المعتمدة حصراً لقلقيلية
+                </p>
+              </div>
 
               <div className="grid grid-cols-1 gap-3.5">
                 {/* 1. Farha */}
@@ -177,11 +206,11 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
                       <div className="flex items-center gap-2">
                         <span className="text-base font-black text-[#0F172A]">1. فرحة</span>
                         <span className="text-[11px] bg-[#10B981]/10 text-[#10B981] font-bold px-2 py-0.5 rounded-full">
-                          أفراح ومناسبات سعيدة
+                          أفراح وتهاني
                         </span>
                       </div>
                       <p className="text-xs text-[#64748B] mt-0.5">
-                        حفلات الزفاف، عقد القران، الخطوبة، التخرج، استقبال المواليد، والدعوات العائلية
+                        زفاف، خطوبة، مولود جديد، تخرج، نجاح، ودعوات عامة
                       </p>
                     </div>
                   </div>
@@ -198,7 +227,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
                 >
                   <div className="flex items-center gap-3.5">
                     <div className="w-12 h-12 rounded-xl bg-[#7B1D21] text-white flex items-center justify-center font-black text-xl shadow-xs group-hover:scale-105 transition-transform">
-                      ⚫
+                      <HeartHandshake className="w-6 h-6" />
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
@@ -208,7 +237,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
                         </span>
                       </div>
                       <p className="text-xs text-[#64748B] mt-0.5">
-                        إعلانات الوفاة، مواعيد وأماكن صلاة الجنازة، المقابر، وأماكن وأوقات استقبال المعزين
+                        وفيات، مواعيد صلاة الجنازة والدفن، وبيوت العزاء في قلقيلية
                       </p>
                     </div>
                   </div>
@@ -247,7 +276,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
 
               {currentUser && (
                 <div className="mt-4 pt-3 border-t border-[#E2E8F0] text-center text-xs text-[#64748B]">
-                  الناشر المسجل: <span className="font-semibold text-[#0F172A]">{currentUser.fullName}</span> ({currentUser.phone})
+                  الناشر المسجل: <span className="font-semibold text-[#0F172A]">{currentUser.fullName}</span> ({currentUser.phone || 'حساب مفعل'})
                 </div>
               )}
             </div>
@@ -300,6 +329,10 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
           )}
         </div>
       </div>
+
+      {isAuthOpen && (
+        <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
+      )}
     </div>
   );
 };
