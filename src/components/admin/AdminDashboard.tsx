@@ -723,6 +723,239 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
+      {/* TAB: COMPLETED & EXPIRED ANNOUNCEMENTS */}
+      {activeTab === 'completed' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="font-bold text-base text-slate-900">
+                الإعلانات المنتهية والمكتملة ({completedList.length})
+              </h2>
+              <p className="text-xs text-slate-500">
+                سجل الإعلانات التاريخية ومناسبات قلقيلية التي انتهت مواعيدها أو تم إكمالها
+              </p>
+            </div>
+            <div className="w-full sm:w-64">
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="بحث في المنتهية..."
+                className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+              />
+            </div>
+          </div>
+
+          {completedList.length === 0 ? (
+            <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center text-slate-500">
+              <Archive className="w-10 h-10 text-slate-400 mx-auto mb-2" />
+              <p className="font-bold text-sm text-slate-800">لا توجد إعلانات منتهية أو مكتملة حالياً</p>
+              <p className="text-xs mt-1">عند انتهاء تاريخ أي مناسبة أو إغلاقها ستظهر هنا في الأرشيف.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3">
+              {completedList.map((ann) => (
+                <div
+                  key={ann.id}
+                  className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:border-slate-300 transition-all"
+                >
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-slate-100 text-slate-800">
+                        {ann.category === 'farha' ? '🟢 فرحة' : ann.category === 'tarha' ? '⚫ ترحة' : '🔴 فزعة'}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          ann.status === 'completed'
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        {ann.status === 'completed' ? 'تمت المناسبة بنجاح ✓' : 'انتهت فترة النشر (مؤرشف)'}
+                      </span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        تاريخ النشر: {new Date(ann.publishedAt || ann.createdAt).toLocaleDateString('ar-EG')}
+                      </span>
+                    </div>
+
+                    <h3 className="font-bold text-base text-slate-900">{ann.title}</h3>
+
+                    <div className="text-xs text-slate-500 flex flex-wrap items-center gap-3">
+                      <span>الناشر: <strong>{ann.createdByUserName}</strong> ({ann.createdByUserPhone || 'غير متوفر'})</span>
+                      <span>•</span>
+                      <span>جهة التواصل: {ann.contact.name} ({ann.contact.phone})</span>
+                      {ann.moderatorName && (
+                        <>
+                          <span>•</span>
+                          <span>المشرف: {ann.moderatorName}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onSelectAnnouncement(ann)}
+                      className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      عرض التفاصيل
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedForModeration(ann)}
+                      className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-amber-400 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>إدارة / تعديل</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB: REJECTED ANNOUNCEMENTS */}
+      {activeTab === 'rejected' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="font-bold text-base text-slate-900">
+                الإعلانات المرفوضة ({rejectedList.length})
+              </h2>
+              <p className="text-xs text-slate-500">
+                الطلبات التي تم رفضها مع توضيح سبب الرفض للناشر
+              </p>
+            </div>
+            <div className="w-full sm:w-64">
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="بحث في المرفوضة..."
+                className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+              />
+            </div>
+          </div>
+
+          {rejectedList.length === 0 ? (
+            <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center text-slate-500">
+              <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+              <p className="font-bold text-sm text-slate-800">لا توجد إعلانات مرفوضة</p>
+              <p className="text-xs mt-1">جميع الطلبات التي تمت مراجعتها مطابقة للمعايير أو تم تعديلها.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3">
+              {rejectedList.map((ann) => (
+                <div
+                  key={ann.id}
+                  className="bg-white p-4 sm:p-5 rounded-2xl border border-red-200 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                >
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-red-100 text-red-800">
+                        {ann.category === 'farha' ? '🟢 فرحة' : ann.category === 'tarha' ? '⚫ ترحة' : '🔴 فزعة'}
+                      </span>
+                      <span className="text-[10px] bg-red-50 text-red-700 font-bold px-2 py-0.5 rounded-full border border-red-200">
+                        تم الرفض ✗
+                      </span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        تاريخ التدقيق: {new Date(ann.moderatedAt || ann.updatedAt).toLocaleDateString('ar-EG')}
+                      </span>
+                    </div>
+
+                    <h3 className="font-bold text-base text-slate-900">{ann.title}</h3>
+
+                    {ann.moderationReason && (
+                      <div className="bg-red-50 border border-red-200 p-2.5 rounded-xl text-xs text-red-900 space-y-0.5">
+                        <strong className="block font-bold">سبب الرفض المسجل من المشرف:</strong>
+                        <p>{ann.moderationReason}</p>
+                      </div>
+                    )}
+
+                    <div className="text-xs text-slate-500 flex flex-wrap items-center gap-3">
+                      <span>الناشر: <strong>{ann.createdByUserName}</strong> ({ann.createdByUserPhone || 'غير متوفر'})</span>
+                      {ann.moderatorName && (
+                        <>
+                          <span>•</span>
+                          <span>المشرف الفاحص: {ann.moderatorName}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onSelectAnnouncement(ann)}
+                      className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      عرض التفاصيل
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedForModeration(ann)}
+                      className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-amber-400 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>إعادة النظر والتدقيق</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB: OVERVIEW */}
+      {activeTab === 'overview' && (
+        <div className="space-y-4">
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
+            <h2 className="font-bold text-lg text-slate-900">نظرة عامة على نشاط المنظومة</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div
+                onClick={() => setActiveTab('pending')}
+                className="p-4 rounded-xl bg-amber-50/80 border border-amber-200 cursor-pointer hover:bg-amber-100/80 transition-colors"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-800">طلبات بانتظار الاعتماد</span>
+                  <Clock className="w-5 h-5 text-amber-600" />
+                </div>
+                <p className="text-2xl font-black text-amber-900 mt-2">{pendingList.length}</p>
+                <span className="text-[11px] text-amber-700 mt-1 block">انقر للبدء في مراجعتها ↵</span>
+              </div>
+
+              <div
+                onClick={() => setActiveTab('published')}
+                className="p-4 rounded-xl bg-emerald-50/80 border border-emerald-200 cursor-pointer hover:bg-emerald-100/80 transition-colors"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-800">إعلانات منشورة ومبثوثة</span>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                </div>
+                <p className="text-2xl font-black text-emerald-900 mt-2">{publishedList.length}</p>
+                <span className="text-[11px] text-emerald-700 mt-1 block">انقر لعرض الإعلانات الحية ↵</span>
+              </div>
+
+              <div
+                onClick={() => setActiveTab('completed')}
+                className="p-4 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">إعلانات منتهية ومؤرشفة</span>
+                  <Archive className="w-5 h-5 text-slate-600" />
+                </div>
+                <p className="text-2xl font-black text-slate-900 mt-2">{completedList.length}</p>
+                <span className="text-[11px] text-slate-600 mt-1 block">انقر لفتح الأرشيف التاريخي ↵</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TAB 5: AUDIT LOG */}
       {activeTab === 'audit' && (
         <div className="space-y-4">
