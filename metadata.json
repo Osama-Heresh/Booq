@@ -1,0 +1,6 @@
+{
+  "name": "بوق البلد - منصة إعلانات المجتمع",
+  "description": "منصة مجتمعية موحدة لنشر وأرشفة إعلانات المجتمع (أفراحنا • أتراحنا • فزعتنا) وتوزيعها المنظم عبر مجموعات واتساب وموقع أرشيف موثق.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
