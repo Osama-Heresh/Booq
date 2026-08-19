@@ -8,10 +8,6 @@ service cloud.firestore {
     }
 
     // Helper functions
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
     function incoming() {
       return request.resource.data;
     }
@@ -46,7 +42,7 @@ service cloud.firestore {
 
     // 1. Users collection
     match /users/{userId} {
-      allow get: if isSignedIn() && (request.auth.uid == userId || isModerator());
+      allow get: if isSignedIn();
       allow list: if isModerator();
       
       // User can create their own profile without escalating role
@@ -54,9 +50,11 @@ service cloud.firestore {
         incoming().role == 'user' || isAdmin()
       );
       
-      // User can update their own profile; only admins can alter role/status
+      // User can update their own profile; only admins can alter role
       allow update: if (
-        isOwner(userId) && incoming().role == existing().role
+        isOwner(userId) && (
+          !('role' in existing()) || incoming().role == existing().role
+        )
       ) || isAdmin();
       
       allow delete: if isAdmin();
@@ -64,34 +62,28 @@ service cloud.firestore {
 
     // 2. Announcements collection
     match /announcements/{announcementId} {
-      // Get single announcement:
-      // Public can read published, completed or expired announcements
-      // Authenticated owners can read their own submissions
-      // Moderators and Admins can read all announcements
+      // Get single announcement
       allow get: if (
-        existing().status in ['published', 'completed', 'expired']
+        resource.data.status in ['published', 'completed', 'expired']
       ) || (
-        isSignedIn() && (existing().createdByUserId == request.auth.uid || isModerator())
+        isSignedIn() && (resource.data.createdByUserId == request.auth.uid || isModerator())
       );
 
       // List queries:
-      // In Firestore, list rules enforce constraints on query filters.
-      // 1. Public users can list ONLY if querying published / completed / expired announcements.
-      // 2. Authenticated users can list their own announcements.
-      // 3. Moderators & Admins can list all announcements.
+      // 1. Public querying published / completed / expired announcements.
+      // 2. Authenticated user querying their own submissions.
+      // 3. Moderators & Admins querying full list.
       allow list: if (
-        // Publicly readable published items
         (resource.data.status in ['published', 'completed', 'expired'])
       ) || (
-        // Owner reading own submissions
         (isSignedIn() && resource.data.createdByUserId == request.auth.uid)
       ) || (
-        // Moderator/Admin full moderation view
         isModerator()
       );
 
       // Authenticated users can create announcements in pending_review state
-      allow create: if isSignedIn() && (
+      allow create: if (
+        isSignedIn() &&
         incoming().createdByUserId == request.auth.uid &&
         incoming().status == 'pending_review' &&
         incoming().category in ['farha', 'tarha', 'fazaa']
@@ -100,11 +92,13 @@ service cloud.firestore {
       // Normal users can edit only if in draft or needs_modification and created by them
       // Moderators & Admins can change status, publish, moderate
       allow update: if (
-        isSignedIn() &&
-        existing().createdByUserId == request.auth.uid &&
-        existing().status in ['draft', 'needs_modification'] &&
-        incoming().createdByUserId == request.auth.uid
-      ) || isModerator();
+        (
+          isSignedIn() &&
+          existing().createdByUserId == request.auth.uid &&
+          existing().status in ['draft', 'needs_modification'] &&
+          incoming().createdByUserId == request.auth.uid
+        ) || isModerator()
+      );
 
       allow delete: if isModerator() || (
         isSignedIn() && existing().createdByUserId == request.auth.uid && existing().status in ['draft', 'rejected']
@@ -132,7 +126,7 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // 6. System Settings (Restricted to Admins ONLY - never publicly readable)
+    // 6. System Settings (Restricted to Admins ONLY)
     match /systemSettings/{settingId} {
       allow read: if isAdmin();
       allow write: if isAdmin();

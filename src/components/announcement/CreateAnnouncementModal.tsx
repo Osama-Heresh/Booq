@@ -5,7 +5,7 @@ import { StorageService } from '../../services/storage';
 import { FarhaForm } from './FarhaForm';
 import { TarhaForm } from './TarhaForm';
 import { FazaaForm } from './FazaaForm';
-import { Sparkles, HeartHandshake, Flame, CheckCircle2, ShieldCheck, X, ArrowRight, UserCheck, KeyRound } from 'lucide-react';
+import { Sparkles, HeartHandshake, Flame, CheckCircle2, ShieldCheck, X, ArrowRight, UserCheck, KeyRound, AlertCircle } from 'lucide-react';
 import { AuthModal } from '../auth/AuthModal';
 
 interface CreateAnnouncementModalProps {
@@ -24,8 +24,14 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
   const { currentUser, isAuthenticated } = useAuth();
   const [category, setCategory] = useState<CategoryType | null>(initialCategory || null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [successResult, setSuccessResult] = useState<{ id: string; title: string; category: CategoryType } | null>(null);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [pendingFormData, setPendingFormData] = useState<{
+    title: string;
+    details: FarhaDetails | TarhaDetails | FazaaDetails;
+    contact: ContactInfo;
+  } | null>(null);
 
   if (!isOpen) return null;
 
@@ -35,10 +41,15 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
     contact: ContactInfo;
   }) => {
     if (!category) return;
+    setSubmissionError(null);
+
+    // If user is not logged in, save form data and prompt authentication
     if (!currentUser) {
+      setPendingFormData(data);
       setIsAuthOpen(true);
       return;
     }
+
     setIsSubmitting(true);
 
     try {
@@ -48,8 +59,8 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
         title: data.title,
         city: 'قلقيلية',
         createdByUserId: currentUser.id,
-        createdByUserName: currentUser.fullName,
-        createdByUserPhone: currentUser.phone,
+        createdByUserName: currentUser.fullName || 'مواطن كريم',
+        createdByUserPhone: currentUser.phone || data.contact.phone || '',
         contact: data.contact,
         farhaDetails: category === 'farha' ? (data.details as FarhaDetails) : undefined,
         tarhaDetails: category === 'tarha' ? (data.details as TarhaDetails) : undefined,
@@ -61,9 +72,12 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
         title: newAnn.title,
         category: newAnn.category,
       });
+      setPendingFormData(null);
       onAnnouncementCreated();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Failed to submit announcement', err);
+      const msg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع أثناء حفظ الإعلان';
+      setSubmissionError(msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -71,7 +85,9 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
 
   const handleResetAndClose = () => {
     setSuccessResult(null);
+    setSubmissionError(null);
     setCategory(initialCategory || null);
+    setPendingFormData(null);
     onClose();
   };
 
@@ -84,7 +100,10 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
             {category && !successResult && (
               <button
                 type="button"
-                onClick={() => setCategory(null)}
+                onClick={() => {
+                  setCategory(null);
+                  setSubmissionError(null);
+                }}
                 className="p-1.5 hover:bg-black/5 rounded-lg text-[#64748B] transition-colors ml-1 cursor-pointer"
                 title="الرجوع لاختيار التصنيف"
               >
@@ -116,6 +135,13 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
 
         {/* Modal Body */}
         <div className="p-4 sm:p-6 overflow-y-auto flex-1">
+          {submissionError && (
+            <div className="mb-4 bg-rose-50 border border-rose-200 text-rose-800 text-xs p-3 rounded-2xl flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>{submissionError}</span>
+            </div>
+          )}
+
           {successResult ? (
             /* Success confirmation screen */
             <div className="text-center py-6 sm:py-8 space-y-4">
@@ -125,13 +151,16 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
 
               <div className="space-y-1">
                 <span className="inline-block px-3 py-1 bg-[#F27D26]/10 text-[#F27D26] rounded-full text-xs font-bold border border-[#F27D26]/20">
-                  الحالة: قيد المراجعة ⏳
+                  الحالة: قيد المراجعة والاعتماد ⏳
                 </span>
                 <h3 className="text-lg sm:text-xl font-black text-[#0F172A] pt-2">
-                  تم تقديم إعلانك بنجاح!
+                  تم استلام إعلانك وحفظه بنجاح!
                 </h3>
                 <p className="text-sm font-semibold text-[#0F172A] max-w-md mx-auto">
                   "{successResult.title}"
+                </p>
+                <p className="text-xs text-[#64748B] font-mono">
+                  معرف الإعلان: {successResult.id}
                 </p>
               </div>
 
@@ -139,13 +168,13 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
                 <div className="flex items-start gap-2">
                   <ShieldCheck className="w-4 h-4 text-[#10B981] mt-0.5 shrink-0" />
                   <p>
-                    <strong className="text-[#0F172A]">خطوة المراجعة والتدقيق:</strong> يقوم مشرفو بوق البلد بمراجعة الإعلان والتأكد من البيانات قبل اعتماده.
+                    <strong className="text-[#0F172A]">خطوة المراجعة والتدقيق:</strong> يقوم مشرفو بوق البلد بمراجعة تفاصيل الإعلان للتأكد من دقته وصحته.
                   </p>
                 </div>
                 <div className="flex items-start gap-2">
                   <span className="text-[#10B981] text-sm font-bold">✓</span>
                   <p>
-                    <strong className="text-[#0F172A]">البث الفوري:</strong> فور الاعتماد، سيُنشر الإعلان على موقع بوق البلد وسيتم إرسال رسالة واتساب كاملة إلى المجموعة المخصصة لقلقيلية.
+                    <strong className="text-[#0F172A]">البث الفوري:</strong> فور الاعتماد، سيُنشر الإعلان على منصة بوق البلد وسيتم إرسال رسالة واتساب منسقة لمجموعة قلقيلية الرسمية.
                   </p>
                 </div>
               </div>
@@ -168,7 +197,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
               </div>
               <h3 className="text-lg font-black text-[#0F172A]">تسجيل الدخول مطلوب لنشر الإعلانات</h3>
               <p className="text-xs text-[#64748B] leading-relaxed">
-                للحفاظ على مصداقية المنصة وحماية المجتمع من الإعلانات الوهمية، يرجى تسجيل الدخول بواسطة رقم هاتفك المحمول.
+                للحفاظ على مصداقية المنصة وحماية أهالي قلقيلية من الإعلانات غير الموثوقة، يرجى تسجيل الدخول برقم هاتفك.
               </p>
               <button
                 type="button"
@@ -331,7 +360,15 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
       </div>
 
       {isAuthOpen && (
-        <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
+        <AuthModal
+          isOpen={isAuthOpen}
+          onClose={() => {
+            setIsAuthOpen(false);
+            if (pendingFormData && currentUser) {
+              handleFormSubmit(pendingFormData);
+            }
+          }}
+        />
       )}
     </div>
   );

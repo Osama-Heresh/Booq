@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../services/authContext';
-import { UserRole } from '../../types';
-import { X, UserCheck, Phone, ShieldCheck, KeyRound, Sparkles, LogOut, CheckCircle2, AlertCircle } from 'lucide-react';
+import { X, UserCheck, Phone, ShieldCheck, KeyRound, Sparkles, LogOut, CheckCircle2, AlertCircle, Zap } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -13,9 +12,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     currentUser,
     sendPhoneOtp,
     verifyPhoneOtp,
+    directPhoneRegister,
     logout,
     switchDevPersona,
     isDevDemoMode,
+    fallbackOtpCode,
   } = useAuth();
 
   const [phone, setPhone] = useState('');
@@ -23,15 +24,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [otpCode, setOtpCode] = useState('');
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (fallbackOtpCode && step === 'otp') {
+      setInfoMsg(`رمز التحقق السريع للمعاينة: ${fallbackOtpCode}`);
+    }
+  }, [fallbackOtpCode, step]);
 
   if (!isOpen) return null;
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setInfoMsg(null);
     if (!phone || phone.trim().length < 8) {
-      setErrorMsg('يرجى كتابة رقم هاتف صالح (مثال: 0599123456 أو +970599123456)');
+      setErrorMsg('يرجى كتابة رقم هاتف صالح (مثال: 0599123456 أو 0568123456)');
       return;
     }
     setIsSubmitting(true);
@@ -39,8 +48,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsSubmitting(false);
     if (res.success) {
       setStep('otp');
+      if (res.simulatedCode) {
+        setInfoMsg(`تم إنشاء رمز التحقق الفوري للتجربة: ${res.simulatedCode}`);
+        setOtpCode(res.simulatedCode);
+      }
     } else {
-      setErrorMsg(res.error || 'تعذر إرسال رمز التحقق عبر Firebase Phone Auth');
+      setErrorMsg(res.error || 'تعذر إرسال رمز التحقق');
+    }
+  };
+
+  const handleQuickRegister = async () => {
+    setErrorMsg(null);
+    setInfoMsg(null);
+    if (!phone || phone.trim().length < 8) {
+      setErrorMsg('يرجى كتابة رقم هاتفك أولاً');
+      return;
+    }
+    setIsSubmitting(true);
+    const res = await directPhoneRegister(phone, fullName || 'مواطن كريم');
+    setIsSubmitting(false);
+    if (res.success) {
+      onClose();
+    } else {
+      setErrorMsg(res.error || 'فشل التسجيل السريع');
     }
   };
 
@@ -48,7 +78,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     e.preventDefault();
     setErrorMsg(null);
     if (!otpCode || otpCode.trim().length < 6) {
-      setErrorMsg('يرجى إدخال رمز التحقق المكون من 6 أرقام المستلم عبر SMS');
+      setErrorMsg('يرجى إدخال رمز التحقق المكون من 6 أرقام');
       return;
     }
     setIsSubmitting(true);
@@ -134,6 +164,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 </div>
               )}
 
+              {infoMsg && (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs p-3 rounded-2xl flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                  <span className="font-semibold">{infoMsg}</span>
+                </div>
+              )}
+
               {step === 'phone' ? (
                 <form onSubmit={handleSendOtp} className="space-y-4">
                   <div>
@@ -166,32 +203,44 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       <Phone className="w-4 h-4 text-[#64748B] absolute right-3 top-3 pointer-events-none" />
                     </div>
                     <p className="text-[11px] text-[#64748B] mt-1">
-                      سيتم إرسال رسالة نصية SMS تحوي رمز التحقق الرسمي من Firebase
+                      يدعم أرقام فلسطين (059/056) والأردن (+962) والدولية
                     </p>
                   </div>
 
-                  {/* Hidden/invisible container for Firebase Recaptcha */}
+                  {/* Hidden container for Firebase Recaptcha */}
                   <div id="recaptcha-auth-container" className="my-1"></div>
 
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className="w-full bg-[#F27D26] hover:bg-[#D96818] text-white font-bold py-3 px-4 rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    {isSubmitting ? (
-                      <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></span>
-                    ) : (
-                      <>
-                        <span>إرسال رمز التحقق SMS</span>
-                        <KeyRound className="w-4 h-4" />
-                      </>
-                    )}
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="w-full bg-[#F27D26] hover:bg-[#D96818] text-white font-bold py-3 px-4 rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      {isSubmitting ? (
+                        <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></span>
+                      ) : (
+                        <>
+                          <span>إرسال رمز التحقق SMS</span>
+                          <KeyRound className="w-4 h-4" />
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleQuickRegister}
+                      disabled={isSubmitting}
+                      className="w-full bg-[#0F172A] hover:bg-[#1E293B] text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-colors shadow-xs disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <Zap className="w-3.5 h-3.5 text-amber-400" />
+                      <span>تسجيل ومتابعة فورية مباشرة برقم الهاتف ⚡</span>
+                    </button>
+                  </div>
                 </form>
               ) : (
                 <form onSubmit={handleVerifyOtp} className="space-y-4">
                   <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900 space-y-1">
-                    <p className="font-bold">تم إرسال رمز التحقق إلى الرقم:</p>
+                    <p className="font-bold">رقم الهاتف المحدد:</p>
                     <p className="font-mono text-sm text-[#0F172A]" dir="ltr">
                       {phone}
                     </p>
@@ -207,11 +256,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       maxLength={6}
                       value={otpCode}
                       onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="• • • • • •"
+                      placeholder="1 2 3 4 5 6"
                       required
                       className="w-full bg-[#F8FAFC] border border-[#CBD5E1] focus:border-[#F27D26] rounded-xl px-3.5 py-3 text-center text-xl tracking-widest font-mono outline-none transition-colors"
                     />
                   </div>
+
+                  {fallbackOtpCode && (
+                    <button
+                      type="button"
+                      onClick={() => setOtpCode(fallbackOtpCode)}
+                      className="w-full text-xs text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 py-2 rounded-xl font-bold transition-colors cursor-pointer"
+                    >
+                      اضغط لتعبئة رمز التحقق التجريبي ({fallbackOtpCode}) تلقائياً
+                    </button>
+                  )}
 
                   <div className="flex gap-2">
                     <button

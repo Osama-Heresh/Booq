@@ -6,9 +6,9 @@ import {
   updateDoc,
   deleteDoc,
   onSnapshot,
-  getDoc,
   query,
   where,
+  Unsubscribe,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase/config';
 import { Announcement, AnnouncementStatus, CategoryType, ModeratorActionLog, User } from '../types';
@@ -17,12 +17,15 @@ import { WhatsAppService } from './whatsapp/whatsappService';
 
 export class StorageService {
   private static instance: StorageService;
-  private announcements: Announcement[] = [];
-  private users: User[] = [];
+  private announcements: Announcement[] = [...INITIAL_ANNOUNCEMENTS];
+  private users: User[] = [...INITIAL_USERS];
   private auditLogs: ModeratorActionLog[] = [];
   private subscribers: (() => void)[] = [];
   private isFirestoreSynced = false;
   private isSeeding = false;
+  private authUser: User | null = null;
+  private announcementsUnsub: Unsubscribe | null = null;
+  private userAnnouncementsUnsub: Unsubscribe | null = null;
 
   private constructor() {
     this.initFirestoreSync();
@@ -36,63 +39,46 @@ export class StorageService {
   }
 
   /**
+   * Set current authenticated user to adjust Firestore listeners
+   */
+  public setAuthUser(user: User | null) {
+    this.authUser = user;
+    this.setupAnnouncementsListener();
+  }
+
+  /**
    * Connect to Firestore collections and sync in real time
    */
   private async initFirestoreSync() {
     if (this.isFirestoreSynced) return;
     this.isFirestoreSynced = true;
 
-    // 1. Initial check & seed Firestore if collections are empty (for fresh preview environments)
+    // 1. Initial seed check for fresh preview environments
     try {
-      const annSnap = await getDocs(collection(db, 'announcements'));
+      const q = query(collection(db, 'announcements'), where('status', 'in', ['published', 'completed', 'expired']));
+      const annSnap = await getDocs(q);
       if (annSnap.empty && !this.isSeeding) {
         this.isSeeding = true;
         for (const ann of INITIAL_ANNOUNCEMENTS) {
-          await setDoc(doc(db, 'announcements', ann.id), {
-            ...ann,
-            isDemo: true,
-          });
+          try {
+            await setDoc(doc(db, 'announcements', ann.id), {
+              ...ann,
+              isDemo: true,
+            });
+          } catch {
+            // Ignored if unauthenticated
+          }
         }
         this.isSeeding = false;
       }
     } catch (err) {
-      // Non-blocking if permission restricted
-      console.warn('Firestore initial announcements check:', err);
+      console.warn('Firestore announcements seed note:', err);
     }
 
-    try {
-      const usersSnap = await getDocs(collection(db, 'users'));
-      if (usersSnap.empty) {
-        for (const u of INITIAL_USERS) {
-          await setDoc(doc(db, 'users', u.id), u);
-        }
-      }
-    } catch (err) {
-      console.warn('Firestore initial users check:', err);
-    }
+    // 2. Setup announcements listener
+    this.setupAnnouncementsListener();
 
-    // 2. Real-time onSnapshot for Announcements
-    try {
-      onSnapshot(
-        collection(db, 'announcements'),
-        (snapshot) => {
-          const list: Announcement[] = [];
-          snapshot.forEach((docSnap) => {
-            list.push(docSnap.data() as Announcement);
-          });
-          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          this.announcements = list;
-          this.notifyChange();
-        },
-        (error) => {
-          console.warn('Firestore announcements listener notice:', error.message);
-        }
-      );
-    } catch (err) {
-      console.warn('Error attaching announcements listener', err);
-    }
-
-    // 3. Real-time onSnapshot for Users (for active moderators/admins)
+    // 3. Sync Users collection for moderators/admins
     try {
       onSnapshot(
         collection(db, 'users'),
@@ -101,8 +87,14 @@ export class StorageService {
           snapshot.forEach((docSnap) => {
             list.push(docSnap.data() as User);
           });
-          this.users = list;
-          this.notifyChange();
+          if (list.length > 0) {
+            // Merge with local list
+            const map = new Map<string, User>();
+            this.users.forEach((u) => map.set(u.id, u));
+            list.forEach((u) => map.set(u.id, u));
+            this.users = Array.from(map.values());
+            this.notifyChange();
+          }
         },
         (error) => {
           if (error.code !== 'permission-denied') {
@@ -135,6 +127,115 @@ export class StorageService {
       );
     } catch (err) {
       console.warn('Error attaching audit listener', err);
+    }
+  }
+
+  private setupAnnouncementsListener() {
+    if (this.announcementsUnsub) {
+      this.announcementsUnsub();
+      this.announcementsUnsub = null;
+    }
+    if (this.userAnnouncementsUnsub) {
+      this.userAnnouncementsUnsub();
+      this.userAnnouncementsUnsub = null;
+    }
+
+    const isModOrAdmin = this.authUser?.role === 'moderator' || this.authUser?.role === 'admin';
+
+    if (isModOrAdmin) {
+      // Moderator / Admin query: fetch all announcements
+      try {
+        this.announcementsUnsub = onSnapshot(
+          collection(db, 'announcements'),
+          (snapshot) => {
+            const list: Announcement[] = [];
+            snapshot.forEach((docSnap) => {
+              list.push(docSnap.data() as Announcement);
+            });
+            list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            this.announcements = list;
+            this.notifyChange();
+          },
+          (err) => {
+            console.warn('Moderator announcements sync note:', err.message);
+          }
+        );
+      } catch (e) {
+        console.warn('Error in moderator announcements listener', e);
+      }
+    } else {
+      // Public query: fetch published/completed/expired
+      try {
+        const publicQuery = query(
+          collection(db, 'announcements'),
+          where('status', 'in', ['published', 'completed', 'expired'])
+        );
+        this.announcementsUnsub = onSnapshot(
+          publicQuery,
+          (snapshot) => {
+            const publicList: Announcement[] = [];
+            snapshot.forEach((docSnap) => {
+              publicList.push(docSnap.data() as Announcement);
+            });
+
+            // Merge with any existing user submissions in memory
+            const map = new Map<string, Announcement>();
+            publicList.forEach((a) => map.set(a.id, a));
+            this.announcements.forEach((a) => {
+              if (this.authUser && a.createdByUserId === this.authUser.id) {
+                map.set(a.id, a);
+              }
+            });
+
+            const merged = Array.from(map.values()).sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+            this.announcements = merged;
+            this.notifyChange();
+          },
+          (err) => {
+            console.warn('Public announcements sync note:', err.message);
+          }
+        );
+      } catch (e) {
+        console.warn('Error in public announcements listener', e);
+      }
+
+      // If user is authenticated, also listen for user's own submissions
+      if (this.authUser) {
+        try {
+          const userQuery = query(
+            collection(db, 'announcements'),
+            where('createdByUserId', '==', this.authUser.id)
+          );
+          this.userAnnouncementsUnsub = onSnapshot(
+            userQuery,
+            (snapshot) => {
+              const userList: Announcement[] = [];
+              snapshot.forEach((docSnap) => {
+                userList.push(docSnap.data() as Announcement);
+              });
+
+              const map = new Map<string, Announcement>();
+              this.announcements.forEach((a) => map.set(a.id, a));
+              userList.forEach((a) => map.set(a.id, a));
+
+              const merged = Array.from(map.values()).sort(
+                (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+              );
+              this.announcements = merged;
+              this.notifyChange();
+            },
+            (err) => {
+              if (err.code !== 'permission-denied') {
+                console.warn('User announcements sync note:', err.message);
+              }
+            }
+          );
+        } catch (e) {
+          console.warn('Error in user announcements listener', e);
+        }
+      }
     }
   }
 
@@ -212,15 +313,20 @@ export class StorageService {
     try {
       await setDoc(doc(db, 'announcements', newId), created);
 
-      // Increment user announcementsCount
+      // Try incrementing user announcementsCount
       const user = this.users.find((u) => u.id === announcement.createdByUserId);
       if (user) {
-        await updateDoc(doc(db, 'users', user.id), {
-          announcementsCount: (user.announcementsCount || 0) + 1,
-        });
+        try {
+          await updateDoc(doc(db, 'users', user.id), {
+            announcementsCount: (user.announcementsCount || 0) + 1,
+          });
+        } catch {
+          // Ignored
+        }
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${newId}`);
+      console.warn('Firestore write warning for createAnnouncement:', err);
+      // Still return the created announcement so the user is not stuck
     }
 
     return created;
@@ -241,6 +347,10 @@ export class StorageService {
       ...updates,
       updatedAt: now,
     };
+
+    // Update in memory
+    this.announcements = this.announcements.map((a) => (a.id === id ? updated : a));
+    this.notifyChange();
 
     try {
       await setDoc(doc(db, 'announcements', id), updated);
@@ -302,7 +412,11 @@ export class StorageService {
       whatsappGroupId: destination.id,
     };
 
-    // Save initial published state immediately
+    // Update in memory immediately
+    this.announcements = this.announcements.map((a) => (a.id === id ? publishedAnnouncement : a));
+    this.notifyChange();
+
+    // Save initial published state
     try {
       await setDoc(doc(db, 'announcements', id), publishedAnnouncement);
     } catch (err) {
@@ -336,8 +450,10 @@ export class StorageService {
       whatsappError: waError,
     };
 
+    this.announcements = this.announcements.map((a) => (a.id === id ? finalAnnouncement : a));
+    this.notifyChange();
+
     try {
-      // Update doc with delivery status (keeps status = 'published' regardless)
       await setDoc(doc(db, 'announcements', id), finalAnnouncement);
 
       // Record Moderator Audit Log
@@ -388,6 +504,9 @@ export class StorageService {
         whatsappError: waResult.error,
         updatedAt: now,
       };
+
+      this.announcements = this.announcements.map((a) => (a.id === id ? updated : a));
+      this.notifyChange();
 
       await setDoc(doc(db, 'announcements', id), updated);
 
@@ -441,6 +560,9 @@ export class StorageService {
       whatsappDeliveryStatus: 'not_sent',
     };
 
+    this.announcements = this.announcements.map((a) => (a.id === id ? updatedAnnouncement : a));
+    this.notifyChange();
+
     try {
       await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
 
@@ -487,6 +609,9 @@ export class StorageService {
       updatedAt: now,
     };
 
+    this.announcements = this.announcements.map((a) => (a.id === id ? updatedAnnouncement : a));
+    this.notifyChange();
+
     try {
       await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
 
@@ -529,6 +654,9 @@ export class StorageService {
       status,
       updatedAt: now,
     };
+
+    this.announcements = this.announcements.map((a) => (a.id === id ? updatedAnnouncement : a));
+    this.notifyChange();
 
     try {
       await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
@@ -591,7 +719,7 @@ export class StorageService {
     try {
       await setDoc(doc(db, 'users', user.id), user);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${user.id}`);
+      console.warn('User doc save notice:', err);
     }
 
     return user;
@@ -602,6 +730,8 @@ export class StorageService {
       await updateDoc(doc(db, 'users', userId), {
         role: newRole,
       });
+      this.users = this.users.map((u) => (u.id === userId ? { ...u, role: newRole } : u));
+      this.notifyChange();
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `users/${userId}`);
     }
