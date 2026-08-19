@@ -7,6 +7,8 @@ import {
   deleteDoc,
   onSnapshot,
   getDoc,
+  query,
+  where,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase/config';
 import { Announcement, AnnouncementStatus, CategoryType, ModeratorActionLog, User } from '../types';
@@ -40,7 +42,7 @@ export class StorageService {
     if (this.isFirestoreSynced) return;
     this.isFirestoreSynced = true;
 
-    // 1. Initial check & seed Firestore if collections are empty
+    // 1. Initial check & seed Firestore if collections are empty (for fresh preview environments)
     try {
       const annSnap = await getDocs(collection(db, 'announcements'));
       if (annSnap.empty && !this.isSeeding) {
@@ -54,6 +56,7 @@ export class StorageService {
         this.isSeeding = false;
       }
     } catch (err) {
+      // Non-blocking if permission restricted
       console.warn('Firestore initial announcements check:', err);
     }
 
@@ -89,7 +92,7 @@ export class StorageService {
       console.warn('Error attaching announcements listener', err);
     }
 
-    // 3. Real-time onSnapshot for Users
+    // 3. Real-time onSnapshot for Users (for active moderators/admins)
     try {
       onSnapshot(
         collection(db, 'users'),
@@ -102,7 +105,9 @@ export class StorageService {
           this.notifyChange();
         },
         (error) => {
-          console.warn('Firestore users listener notice:', error.message);
+          if (error.code !== 'permission-denied') {
+            console.warn('Firestore users listener notice:', error.message);
+          }
         }
       );
     } catch (err) {
@@ -123,7 +128,9 @@ export class StorageService {
           this.notifyChange();
         },
         (error) => {
-          console.warn('Firestore moderationActions listener notice:', error.message);
+          if (error.code !== 'permission-denied') {
+            console.warn('Firestore moderationActions listener notice:', error.message);
+          }
         }
       );
     } catch (err) {
@@ -262,7 +269,14 @@ export class StorageService {
   }
 
   /**
-   * Moderator Approval Workflow: Updates status & triggers single WhatsApp group dispatch
+   * EXACT APPROVAL ORDER SPECIFIED:
+   * 1. Moderator approves
+   * 2. Save announcement as published in Firestore
+   * 3. Generate complete WhatsApp message & attempt WhatsApp delivery
+   * 4. Update WhatsApp delivery status (sent / failed)
+   * 
+   * CRITICAL GUARANTEE: If WhatsApp delivery fails, announcement REMAINS PUBLISHED.
+   * whatsappDeliveryStatus is marked as 'failed', error is stored, and moderator can retry later.
    */
   public async approveAndPublishAnnouncement(
     id: string,
@@ -273,12 +287,10 @@ export class StorageService {
     if (!announcement) throw new Error('الإعلان غير موجود');
 
     const now = new Date().toISOString();
-
-    // 1. Dispatch to designated single WhatsApp group
-    const waResult = await WhatsAppService.getInstance().sendAnnouncementToGroup(announcement);
     const destination = WhatsAppService.getInstance().getDestinationForCategory(announcement.category);
 
-    const updatedAnnouncement: Announcement = {
+    // STEP 1 & 2: Save announcement as published in Firestore first
+    const publishedAnnouncement: Announcement = {
       ...announcement,
       status: 'published',
       publishedAt: now,
@@ -286,19 +298,49 @@ export class StorageService {
       moderatorId,
       moderatorName,
       moderatedAt: now,
-      whatsappDeliveryStatus: waResult.success ? 'sent' : 'failed',
-      whatsappSentAt: waResult.success ? now : undefined,
-      whatsappMessageId: waResult.messageId,
-      whatsappMessageBody: waResult.messageBody,
+      whatsappDeliveryStatus: 'pending',
       whatsappGroupId: destination.id,
-      whatsappError: waResult.error,
     };
 
-    // 2. Persist to Firestore
+    // Save initial published state immediately
     try {
-      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
+      await setDoc(doc(db, 'announcements', id), publishedAnnouncement);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+    }
 
-      // 3. Record Audit Log
+    // STEP 3: Attempt WhatsApp delivery
+    let waSuccess = false;
+    let waError: string | undefined;
+    let waMessageId: string | undefined;
+    let waMessageBody: string | undefined;
+
+    try {
+      const waResult = await WhatsAppService.getInstance().sendAnnouncementToGroup(publishedAnnouncement);
+      waSuccess = waResult.success;
+      waError = waResult.error;
+      waMessageId = waResult.messageId;
+      waMessageBody = waResult.messageBody;
+    } catch (err: unknown) {
+      waSuccess = false;
+      waError = err instanceof Error ? err.message : 'فشل إرسال رسالة واتساب';
+    }
+
+    // STEP 4: Update WhatsApp delivery status on the published announcement
+    const finalAnnouncement: Announcement = {
+      ...publishedAnnouncement,
+      whatsappDeliveryStatus: waSuccess ? 'sent' : 'failed',
+      whatsappSentAt: waSuccess ? new Date().toISOString() : undefined,
+      whatsappMessageId: waMessageId,
+      whatsappMessageBody: waMessageBody,
+      whatsappError: waError,
+    };
+
+    try {
+      // Update doc with delivery status (keeps status = 'published' regardless)
+      await setDoc(doc(db, 'announcements', id), finalAnnouncement);
+
+      // Record Moderator Audit Log
       const auditLog: ModeratorActionLog = {
         id: `audit_${Date.now()}`,
         announcementId: id,
@@ -308,7 +350,7 @@ export class StorageService {
         moderatorId,
         moderatorName,
         timestamp: now,
-        whatsappDelivered: waResult.success,
+        whatsappDelivered: waSuccess,
       };
       await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
     } catch (err) {
@@ -316,10 +358,63 @@ export class StorageService {
     }
 
     return {
-      announcement: updatedAnnouncement,
-      whatsappSuccess: waResult.success,
-      whatsappError: waResult.error,
+      announcement: finalAnnouncement,
+      whatsappSuccess: waSuccess,
+      whatsappError: waError,
     };
+  }
+
+  /**
+   * Retry WhatsApp delivery for an already published announcement
+   */
+  public async retryWhatsAppDelivery(
+    id: string,
+    moderatorId: string,
+    moderatorName: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const announcement = this.announcements.find((a) => a.id === id);
+    if (!announcement) throw new Error('الإعلان غير موجود');
+
+    try {
+      const waResult = await WhatsAppService.getInstance().sendAnnouncementToGroup(announcement);
+      const now = new Date().toISOString();
+
+      const updated: Announcement = {
+        ...announcement,
+        whatsappDeliveryStatus: waResult.success ? 'sent' : 'failed',
+        whatsappSentAt: waResult.success ? now : announcement.whatsappSentAt,
+        whatsappMessageId: waResult.messageId,
+        whatsappMessageBody: waResult.messageBody,
+        whatsappError: waResult.error,
+        updatedAt: now,
+      };
+
+      await setDoc(doc(db, 'announcements', id), updated);
+
+      const auditLog: ModeratorActionLog = {
+        id: `audit_retry_${Date.now()}`,
+        announcementId: id,
+        announcementTitle: announcement.title,
+        category: announcement.category,
+        action: 'approve',
+        moderatorId,
+        moderatorName,
+        timestamp: now,
+        reason: waResult.success ? 'إعادة إرسال واتساب بنجاح' : 'إعادة محاولة إرسال واتساب',
+        whatsappDelivered: waResult.success,
+      };
+      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+
+      return {
+        success: waResult.success,
+        error: waResult.error,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'فشل إعادة الإرسال',
+      };
+    }
   }
 
   /**

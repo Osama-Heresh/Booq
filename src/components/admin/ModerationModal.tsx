@@ -248,29 +248,67 @@ export const ModerationModal: React.FC<ModerationModalProps> = ({
           {activeTab === 'actions' && (
             <div className="space-y-4">
               {/* Main Primary Action: Approve */}
-              <div className="p-4 sm:p-5 bg-emerald-950 text-white rounded-2xl space-y-3 shadow-sm border border-emerald-800/40">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                    <span className="font-black text-sm">اعتماد ونشر في الموقع وواتساب</span>
+              {announcement.status !== 'published' ? (
+                <div className="p-4 sm:p-5 bg-emerald-950 text-white rounded-2xl space-y-3 shadow-sm border border-emerald-800/40">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                      <span className="font-black text-sm">اعتماد ونشر في الموقع وواتساب</span>
+                    </div>
+                    <span className="text-[10px] bg-emerald-800/80 px-2.5 py-1 rounded-lg text-emerald-200 font-mono">
+                      {waConfig.mode === 'mock' ? 'Mock Mode' : 'Meta Production'}
+                    </span>
                   </div>
-                  <span className="text-[10px] bg-emerald-800/80 px-2.5 py-1 rounded-lg text-emerald-200 font-mono">
-                    {waConfig.mode === 'mock' ? 'Mock Mode' : 'Meta Production'}
-                  </span>
+                  <p className="text-xs text-emerald-100/90 leading-relaxed">
+                    بمجرد الضغط على اعتماد، سيُنشر الإعلان على منصة "بوق البلد" لقلقيلية وسيتم إرسال الرسالة إلى المجموعة الرسمية: <strong>{destination.name}</strong>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleApprove}
+                    disabled={isProcessing}
+                    className="w-full py-3 bg-[#F27D26] hover:bg-[#D96818] text-white rounded-xl text-xs font-black shadow transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    <span>{isProcessing ? 'جاري الاعتماد والإرسال...' : 'اعتماد ونشر الإعلان الآن'}</span>
+                  </button>
                 </div>
-                <p className="text-xs text-emerald-100/90 leading-relaxed">
-                  بمجرد الضغط على اعتماد، سيُنشر الإعلان على منصة "بوق البلد" لقلقيلية وسيتم إرسال الرسالة إلى المجموعة الرسمية: <strong>{destination.name}</strong>
-                </p>
-                <button
-                  type="button"
-                  onClick={handleApprove}
-                  disabled={isProcessing}
-                  className="w-full py-3 bg-[#F27D26] hover:bg-[#D96818] text-white rounded-xl text-xs font-black shadow transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  <span>{isProcessing ? 'جاري الاعتماد والإرسال...' : 'اعتماد ونشر الإعلان الآن'}</span>
-                </button>
-              </div>
+              ) : (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">حالة النشر والبث:</span>
+                    <span className="text-xs font-black text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-md">
+                      منشور على الموقع ✓
+                    </span>
+                  </div>
+                  {announcement.whatsappDeliveryStatus === 'failed' && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-2">
+                      <p className="text-xs text-rose-800 font-medium">
+                        ⚠️ فشل إرسال رسالة الواتساب السابقة: {announcement.whatsappError || 'لم يتم التسليم'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!currentUser) return;
+                          setIsProcessing(true);
+                          setErrorMsg(null);
+                          const res = await storage.retryWhatsAppDelivery(announcement.id, currentUser.id, currentUser.fullName);
+                          setIsProcessing(false);
+                          if (res.success) {
+                            setActionSuccessMessage('تمت إعادة إرسال رسالة الواتساب بنجاح!');
+                          } else {
+                            setErrorMsg(res.error || 'تعذرت إعادة الإرسال');
+                          }
+                        }}
+                        disabled={isProcessing}
+                        className="px-3 py-1.5 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
+                        <span>إعادة محاولة إرسال واتساب</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Action 2: Request Modification */}
               <div className="p-4 bg-[#F8FAFC] border border-[#E2E8F0] rounded-2xl space-y-2">

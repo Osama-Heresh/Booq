@@ -401,9 +401,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <span className="text-[11px] text-slate-400">
                       نُشر: {new Date(ann.publishedAt || ann.createdAt).toLocaleDateString('ar-EG')}
                     </span>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
-                      تم البث في WhatsApp ✓
-                    </span>
+                    {ann.whatsappDeliveryStatus === 'sent' && (
+                      <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
+                        تم البث في WhatsApp ✓
+                      </span>
+                    )}
+                    {ann.whatsappDeliveryStatus === 'failed' && (
+                      <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-bold">
+                        فشل إرسال WhatsApp ⚠️
+                      </span>
+                    )}
+                    {ann.whatsappDeliveryStatus === 'pending' && (
+                      <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold">
+                        جاري بث WhatsApp...
+                      </span>
+                    )}
                   </div>
                   <h4 className="font-bold text-sm text-slate-900">{ann.title}</h4>
                   <p className="text-xs text-slate-500">المشرف المعتمد: {ann.moderatorName || 'مشرف النظام'}</p>

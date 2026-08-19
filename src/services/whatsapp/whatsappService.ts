@@ -3,7 +3,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase/config';
 import { Announcement, CategoryType, WhatsAppConfig, WhatsAppMessageLog } from '../../types';
 import { WhatsAppFormatter } from './formatter';
 
-// Environment variables with fallback
+// Consistent environment variables with safe defaults
 const metaEnv = (import.meta as unknown as { env?: Record<string, string> }).env || {};
 const ENV_MODE = (metaEnv.VITE_WHATSAPP_MODE || 'mock') as 'mock' | 'production';
 const ENV_TEST_PHONE = metaEnv.VITE_TEST_WHATSAPP_NUMBER || '+962788019331';
@@ -14,23 +14,23 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
   connectionStatus: ENV_MODE === 'production' ? 'disconnected' : 'mock_active',
   groups: {
     farha: {
-      id: 'group_farha_qalqilya_01',
+      id: 'group_farha_qalqilya_mock',
       name: 'بوق البلد - أفراح قلقيلية (المجموعة الرسمية الوحيدة)',
-      description: 'المجموعة الرسمية المعتمدة لأخبار ومناسبات الفرح والتهاني في قلقيلية',
+      description: 'المجموعة المعتمدة لأخبار ومناسبات الفرح والتهاني في قلقيلية',
       inviteLink: 'https://chat.whatsapp.com/farha-qalqilya-official',
       isActive: true,
     },
     tarha: {
-      id: 'group_tarha_qalqilya_02',
+      id: 'group_tarha_qalqilya_mock',
       name: 'بوق البلد - وفيات وتعازي قلقيلية (المجموعة الرسمية الوحيدة)',
-      description: 'المجموعة الرسمية المعتمدة لإعلانات الوفيات ومواعيد الدفن وبيوت العزاء في قلقيلية',
+      description: 'المجموعة المعتمدة لإعلانات الوفيات ومواعيد الدفن وبيوت العزاء في قلقيلية',
       inviteLink: 'https://chat.whatsapp.com/tarha-qalqilya-official',
       isActive: true,
     },
     fazaa: {
-      id: 'group_fazaa_qalqilya_03',
+      id: 'group_fazaa_qalqilya_mock',
       name: 'بوق البلد - فزعة ونداءات قلقيلية (المجموعة الرسمية الوحيدة)',
-      description: 'المجموعة الرسمية المعتمدة لنداءات التبرع بالدم، الجاهات، والصلح العشائري والإغاثة الطارئة',
+      description: 'المجموعة المعتمدة لنداءات التبرع بالدم، الجاهات، والصلح العشائري والإغاثة الطارئة',
       inviteLink: 'https://chat.whatsapp.com/fazaa-qalqilya-official',
       isActive: true,
     },
@@ -59,7 +59,7 @@ export class WhatsAppService {
     if (this.isInitialized) return;
     this.isInitialized = true;
 
-    // 1. Sync config from Firestore
+    // 1. Sync config from Firestore (Only authenticated admin can read/write systemSettings)
     try {
       onSnapshot(
         doc(db, 'systemSettings', 'whatsapp_config'),
@@ -73,14 +73,17 @@ export class WhatsAppService {
           }
         },
         (err) => {
-          console.warn('WhatsApp config Firestore listener notice:', err.message);
+          // Normal for non-admin users where security rules rightly reject read
+          if (err.code !== 'permission-denied') {
+            console.warn('WhatsApp config Firestore listener notice:', err.message);
+          }
         }
       );
     } catch (e) {
       console.warn('WhatsApp config initial listener setup', e);
     }
 
-    // 2. Real-time sync logs from Firestore collection
+    // 2. Real-time sync logs from Firestore collection for moderators/admins
     try {
       onSnapshot(
         collection(db, 'whatsappMessages'),
@@ -94,7 +97,9 @@ export class WhatsAppService {
           this.notify();
         },
         (error) => {
-          console.warn('WhatsApp logs Firestore sync notice:', error.message);
+          if (error.code !== 'permission-denied') {
+            console.warn('WhatsApp logs Firestore sync notice:', error.message);
+          }
         }
       );
     } catch (e) {
@@ -165,7 +170,7 @@ export class WhatsAppService {
 
     // MOCK MODE
     if (this.config.mode === 'mock') {
-      await new Promise((res) => setTimeout(res, 600));
+      await new Promise((res) => setTimeout(res, 400));
 
       const logEntry: WhatsAppMessageLog = {
         id: messageId,
@@ -193,7 +198,7 @@ export class WhatsAppService {
     }
 
     // PRODUCTION MODE (Meta Cloud API)
-    // In production without server-side tokens, refuse to fake delivery.
+    // Never fake production success. Refuse delivery unless valid server-side API responds.
     const errorMessage =
       'تكامل WhatsApp الإنتاجي غير مهيأ بعد. لم يتم إرسال رسالة حقيقية (يرجى ضبط بيانات اعتماد Meta API على الخادم). تم حفظ ونشر الإعلان على المنصة بأمان.';
 
@@ -236,7 +241,7 @@ export class WhatsAppService {
     const now = new Date().toISOString();
 
     if (this.config.mode === 'mock') {
-      await new Promise((res) => setTimeout(res, 500));
+      await new Promise((res) => setTimeout(res, 400));
 
       const logEntry: WhatsAppMessageLog = {
         id: messageId,
@@ -265,7 +270,7 @@ export class WhatsAppService {
     }
 
     const errorMessage =
-      'تكامل WhatsApp الإنتاجي غير مهيأ بعد. يرجى ضبط بيانات اعتماد Meta API.';
+      'تكامل WhatsApp الإنتاجي غير مهيأ بعد. يرجى ضبط بيانات اعتماد Meta API على الخادم.';
 
     const failLog: WhatsAppMessageLog = {
       id: messageId,
@@ -297,44 +302,77 @@ export class WhatsAppService {
 
   /**
    * Send test connection ping
+   * Fixed to strictly distinguish MOCK (simulated) from PRODUCTION (fails cleanly without real credentials)
    */
   public async sendTestMessage(
     testNumber: string = this.config.testPhoneNumber
   ): Promise<{ success: boolean; isMock: boolean; previewMessage: string; error?: string }> {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const now = new Date();
-    const testMsg = `🧪 *بوق البلد - رسالة فحص الاتصال*\n\nهذه رسالة اختبار للتأكد من ربط نظام البث لمحافظة قلقيلية.\nالوقت: ${now.toLocaleTimeString('ar-EG')}\nالرقم المستهدف: ${testNumber}\nالوضع: ${
-      this.config.mode === 'mock' ? 'تجريبي (Mock Mode)' : 'إنتاجي (Meta Production)'
-    }`;
-
     const logId = `test_${Date.now()}`;
-    const logEntry: WhatsAppMessageLog = {
+
+    // 1. MOCK MODE
+    if (this.config.mode === 'mock') {
+      const testMsg = `🧪 *[تجريبي - MOCK]* *بوق البلد - رسالة فحص الاتصال*\n\nهذه محاكاة تجريبية للتأكد من بنية رسائل البث لمحافظة قلقيلية (وضع التطوير Mock).\nالوقت: ${now.toLocaleTimeString('ar-EG')}\nالرقم التجريبي: ${testNumber}`;
+
+      const logEntry: WhatsAppMessageLog = {
+        id: logId,
+        announcementId: 'TEST_PING',
+        category: 'farha',
+        groupName: `اختبار المحاكاة التجريبية (Mock): ${testNumber}`,
+        destinationGroupId: testNumber,
+        messageBody: testMsg,
+        timestamp: now.toISOString(),
+        status: 'simulated',
+      };
+
+      try {
+        await setDoc(doc(db, 'whatsappMessages', logId), logEntry);
+      } catch (err) {
+        console.warn('Failed saving test log', err);
+      }
+
+      const updatedConfig = {
+        ...this.config,
+        lastTestedAt: now.toISOString(),
+      };
+      this.saveConfig(updatedConfig);
+
+      return {
+        success: true,
+        isMock: true,
+        previewMessage: testMsg,
+      };
+    }
+
+    // 2. PRODUCTION MODE
+    // Without active Meta Business Cloud API response, MUST return success=false and status='failed'
+    const errorArabic = 'فشل اختبار الاتصال الإنتاجي: بيانات اعتماد Meta Cloud API غير مضبوطة على الخادم. لم يتم الإرسال.';
+    const prodMsg = `⚠️ *[فشل الاتصال]* لم يتم إرسال رسالة إلى ${testNumber} لعدم توفر مفاتيح Meta API.`;
+
+    const failLog: WhatsAppMessageLog = {
       id: logId,
       announcementId: 'TEST_PING',
       category: 'farha',
-      groupName: `اختبار الاتصال: ${testNumber}`,
+      groupName: `اختبار إنتاجي فاشل: ${testNumber}`,
       destinationGroupId: testNumber,
-      messageBody: testMsg,
+      messageBody: prodMsg,
       timestamp: now.toISOString(),
-      status: this.config.mode === 'mock' ? 'simulated' : 'delivered',
+      status: 'failed',
+      errorMessage: errorArabic,
     };
 
     try {
-      await setDoc(doc(db, 'whatsappMessages', logId), logEntry);
+      await setDoc(doc(db, 'whatsappMessages', logId), failLog);
     } catch (err) {
       console.warn('Failed saving test log', err);
     }
 
-    const updatedConfig = {
-      ...this.config,
-      lastTestedAt: now.toISOString(),
-    };
-    this.saveConfig(updatedConfig);
-
     return {
-      success: true,
-      isMock: this.config.mode === 'mock',
-      previewMessage: testMsg,
+      success: false,
+      isMock: false,
+      previewMessage: prodMsg,
+      error: errorArabic,
     };
   }
 }

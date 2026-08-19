@@ -64,6 +64,7 @@ service cloud.firestore {
 
     // 2. Announcements collection
     match /announcements/{announcementId} {
+      // Get single announcement:
       // Public can read published, completed or expired announcements
       // Authenticated owners can read their own submissions
       // Moderators and Admins can read all announcements
@@ -73,7 +74,21 @@ service cloud.firestore {
         isSignedIn() && (existing().createdByUserId == request.auth.uid || isModerator())
       );
 
-      allow list: if true; // Client queries can filter published items or user/moderator items
+      // List queries:
+      // In Firestore, list rules enforce constraints on query filters.
+      // 1. Public users can list ONLY if querying published / completed / expired announcements.
+      // 2. Authenticated users can list their own announcements.
+      // 3. Moderators & Admins can list all announcements.
+      allow list: if (
+        // Publicly readable published items
+        (resource.data.status in ['published', 'completed', 'expired'])
+      ) || (
+        // Owner reading own submissions
+        (isSignedIn() && resource.data.createdByUserId == request.auth.uid)
+      ) || (
+        // Moderator/Admin full moderation view
+        isModerator()
+      );
 
       // Authenticated users can create announcements in pending_review state
       allow create: if isSignedIn() && (
@@ -117,9 +132,9 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // 6. System Settings
+    // 6. System Settings (Restricted to Admins ONLY - never publicly readable)
     match /systemSettings/{settingId} {
-      allow read: if true;
+      allow read: if isAdmin();
       allow write: if isAdmin();
     }
   }
