@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Announcement, AnnouncementStatus, CategoryType, WhatsAppConfig } from '../../types';
+import React, { useState, useEffect } from 'react';
+import { Announcement, AnnouncementStatus, CategoryType, UserRole, WhatsAppConfig } from '../../types';
 import { StorageService } from '../../services/storage';
 import { WhatsAppService } from '../../services/whatsapp/whatsappService';
 import { useAuth } from '../../services/authContext';
@@ -24,6 +24,7 @@ import {
   RotateCcw,
   Search,
   Filter,
+  UserCheck,
 } from 'lucide-react';
 
 type AdminTab =
@@ -46,7 +47,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onSelectAnnouncement,
   onRefreshData,
 }) => {
-  const { currentUser, isAdmin } = useAuth();
+  const { currentUser, isAdmin, changeCurrentUserRole } = useAuth();
   const [activeTab, setActiveTab] = useState<AdminTab>('pending');
   const [selectedForModeration, setSelectedForModeration] = useState<Announcement | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -54,9 +55,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [testResult, setTestResult] = useState<{ success: boolean; msg: string } | null>(null);
   const [isTestingWhatsApp, setIsTestingWhatsApp] = useState(false);
   const [resetConfirmed, setResetConfirmed] = useState(false);
+  const [, setTrigger] = useState(0);
 
   const storage = StorageService.getInstance();
   const waService = WhatsAppService.getInstance();
+
+  // Subscribe to storage changes for real-time reactivity
+  useEffect(() => {
+    const unsub = storage.subscribe(() => {
+      setTrigger((prev) => prev + 1);
+    });
+    return unsub;
+  }, [storage]);
 
   const announcements = storage.getAnnouncements();
   const users = storage.getUsers();
@@ -72,10 +82,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       .filter((a) => statusList.includes(a.status))
       .filter((a) => {
         if (!searchTerm.trim()) return true;
+        const query = searchTerm.trim().toLowerCase();
         return (
-          a.title.includes(searchTerm) ||
-          a.createdByUserName.includes(searchTerm) ||
-          a.category.includes(searchTerm)
+          a.title.toLowerCase().includes(query) ||
+          a.createdByUserName.toLowerCase().includes(query) ||
+          (a.createdByUserPhone && a.createdByUserPhone.includes(query)) ||
+          a.category.toLowerCase().includes(query) ||
+          (a.farhaDetails?.honorees && a.farhaDetails.honorees.toLowerCase().includes(query))
         );
       });
   };
@@ -768,25 +781,57 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* TAB 6: USERS */}
       {activeTab === 'users' && (
         <div className="space-y-4">
-          <h2 className="font-bold text-base text-slate-900">المستخدمون المسجلون ({users.length})</h2>
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-bold text-base text-slate-900">المستخدمون المسجلون ({users.length})</h2>
+              <p className="text-xs text-slate-500">يمكنك تعديل صلاحيات وأدوار أي مستخدم (مواطن / مشرف / مدير عام) فورياً</p>
+            </div>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {users.map((u) => (
-              <div key={u.id} className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-bold text-sm text-slate-900">{u.fullName}</p>
-                    <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px] font-bold">
-                      {u.role === 'admin' ? 'مدير عام' : u.role === 'moderator' ? 'مشرف' : 'مواطن'}
+            {users.map((u) => {
+              const isSelf = currentUser?.id === u.id || (currentUser?.phone && currentUser.phone === u.phone);
+              return (
+                <div key={u.id} className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col justify-between gap-3 hover:border-slate-300 transition-all shadow-xs">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-sm text-slate-900">{u.fullName}</p>
+                        {isSelf && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">
+                            (أنت)
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 font-mono mt-0.5">{u.phone || 'بدون رقم'}</p>
+                      <p className="text-[11px] text-slate-400 mt-1">إجمالي الإعلانات المقدمة: {u.announcementsCount || 0}</p>
+                    </div>
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 shrink-0">
+                      نشط ✓
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500 font-mono mt-0.5">{u.phone}</p>
-                  <p className="text-[11px] text-slate-400">إجمالي الإعلانات: {u.announcementsCount || 0}</p>
+
+                  {/* Role Selector */}
+                  <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-600">الدور والصلاحية:</label>
+                    <select
+                      value={u.role}
+                      onChange={async (e) => {
+                        const newRole = e.target.value as UserRole;
+                        await storage.updateUserRole(u.id, newRole);
+                        if (isSelf) {
+                          await changeCurrentUserRole(newRole);
+                        }
+                      }}
+                      className="text-xs bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 cursor-pointer transition-colors"
+                    >
+                      <option value="user">👤 مواطن (نشر إعلانات)</option>
+                      <option value="moderator">🛡️ مشرف (تدقيق وقرارات)</option>
+                      <option value="admin">👑 مدير عام (صلاحيات كاملة)</option>
+                    </select>
+                  </div>
                 </div>
-                <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
-                  نشط ✓
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

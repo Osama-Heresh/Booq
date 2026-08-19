@@ -58,9 +58,10 @@ function AppContent() {
     window.addEventListener('hashchange', handleUrlChange);
     window.addEventListener('popstate', handleUrlChange);
 
-    // Also subscribe to storage changes so if deep linked announcement loads asynchronously, it gets selected
+    // Also subscribe to storage changes so if deep linked announcement loads asynchronously, it gets selected and UI updates
     const unsub = storage.subscribe(() => {
       handleUrlChange();
+      setRefreshKey((prev) => prev + 1);
     });
 
     return () => {

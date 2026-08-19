@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Announcement, CategoryType } from '../../types';
 import { StorageService } from '../../services/storage';
 import { AnnouncementCard } from '../announcement/AnnouncementCard';
@@ -35,7 +35,16 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onShareAnnouncement,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [, setTrigger] = useState(0);
   const storage = StorageService.getInstance();
+
+  useEffect(() => {
+    const unsub = storage.subscribe(() => {
+      setTrigger((prev) => prev + 1);
+    });
+    return unsub;
+  }, [storage]);
+
   const publishedAnnouncements = storage.getPublishedAnnouncements(categoryFilter);
 
   // Filtered by search if typed

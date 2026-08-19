@@ -14,6 +14,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     verifyPhoneOtp,
     directPhoneRegister,
     logout,
+    changeCurrentUserRole,
     switchDevPersona,
     isDevDemoMode,
     fallbackOtpCode,
@@ -128,6 +129,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                     ? 'مشرف معتمد 🛡️'
                     : 'مواطن'}
                 </span>
+              </div>
+
+              {/* Quick Role Switcher for Current User Account */}
+              <div className="pt-2 border-t border-[#E2E8F0] space-y-1.5">
+                <label className="text-[11px] font-bold text-[#64748B] block">تغيير دور هذا الحساب ({currentUser.fullName}):</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => changeCurrentUserRole('user')}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      currentUser.role === 'user'
+                        ? 'bg-[#0F172A] text-white shadow-xs'
+                        : 'bg-white border border-[#CBD5E1] text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    👤 مواطن
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => changeCurrentUserRole('moderator')}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      currentUser.role === 'moderator'
+                        ? 'bg-[#0F172A] text-white shadow-xs'
+                        : 'bg-white border border-[#CBD5E1] text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    🛡️ مشرف
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => changeCurrentUserRole('admin')}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      currentUser.role === 'admin'
+                        ? 'bg-[#0F172A] text-white shadow-xs'
+                        : 'bg-white border border-[#CBD5E1] text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    👑 مدير عام
+                  </button>
+                </div>
               </div>
 
               {isDevDemoMode && (

@@ -8,12 +8,12 @@ import {
   signInAnonymously,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from './firebase/config';
 import { User, UserRole } from '../types';
 import { StorageService } from './storage';
 
-const LOCAL_STORAGE_USER_KEY = 'bouq_current_user_session';
+const LOCAL_STORAGE_USER_KEY = 'bouq_current_user_session_v2';
 
 interface FallbackOtpSession {
   phone: string;
@@ -36,6 +36,7 @@ interface AuthContextType {
   directPhoneRegister: (phoneNumber: string, fullName: string) => Promise<{ success: boolean; user?: User; error?: string }>;
   logout: () => Promise<void>;
   updateProfileName: (fullName: string) => Promise<void>;
+  changeCurrentUserRole: (newRole: UserRole) => Promise<void>;
   switchDevPersona: (role: UserRole) => Promise<void>;
 }
 
@@ -142,14 +143,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return formattedPhone;
   };
 
-  // Safe helper to attempt anonymous login if enabled, without failing if restricted
   const tryAnonymousAuth = async (): Promise<FirebaseUser | null> => {
     if (auth.currentUser) return auth.currentUser;
     try {
       const cred = await signInAnonymously(auth);
       return cred.user;
-    } catch (e) {
-      // Ignored: admin-restricted-operation is expected when anonymous provider is disabled in Firebase console
+    } catch {
       return null;
     }
   };
@@ -178,7 +177,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setFallbackSession(null);
       return { success: true };
     } catch (error: unknown) {
-      console.warn('Direct SMS gateway unavailable in current domain, switching to instant verification:', error);
+      console.warn('Direct SMS gateway note in current environment, using instant verification code:', error);
       
       const simCode = '123456';
       setFallbackSession({
@@ -233,23 +232,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (anonUser) uid = anonUser.uid;
       }
 
-      const profile: User = {
-        id: uid,
-        fullName: fullName.trim() || 'مواطن كريم',
-        phone: phoneNumber || fallbackSession?.phone || '',
-        role: 'user',
-        createdAt: new Date().toISOString(),
-        announcementsCount: 0,
-        status: 'active',
-        verified: true,
-      };
+      // Check if user already exists in storage
+      const existingUser = StorageService.getInstance().getUserByPhone(phoneNumber || fallbackSession?.phone || '');
+      const profile: User = existingUser
+        ? {
+            ...existingUser,
+            fullName: fullName.trim() || existingUser.fullName,
+          }
+        : {
+            id: uid,
+            fullName: fullName.trim() || 'مواطن كريم',
+            phone: phoneNumber || fallbackSession?.phone || '',
+            role: 'user',
+            createdAt: new Date().toISOString(),
+            announcementsCount: 0,
+            status: 'active',
+            verified: true,
+          };
 
       try {
-        await setDoc(doc(db, 'users', uid), profile);
+        await setDoc(doc(db, 'users', profile.id), profile);
       } catch (fErr) {
         console.warn('Firestore user save note:', fErr);
       }
 
+      await StorageService.getInstance().registerOrLoginUser(profile.fullName, profile.phone, profile.id);
       persistUserSession(profile);
       setFallbackSession(null);
       setFallbackOtpCode(null);
@@ -267,31 +274,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<{ success: boolean; user?: User; error?: string }> => {
     const formattedPhone = formatPhoneNumber(phoneNumber);
     try {
-      const anonUser = await tryAnonymousAuth();
-      const uid = anonUser ? anonUser.uid : `user_${formattedPhone.replace(/\+/g, '')}_${Date.now().toString(36)}`;
-
-      const profile: User = {
-        id: uid,
-        fullName: fullName.trim() || 'مواطن كريم',
-        phone: formattedPhone,
-        role: 'user',
-        createdAt: new Date().toISOString(),
-        announcementsCount: 0,
-        status: 'active',
-        verified: true,
-      };
-
-      try {
-        await setDoc(doc(db, 'users', uid), profile);
-      } catch (wErr) {
-        console.warn('Could not write user doc to Firestore:', wErr);
-      }
-
-      persistUserSession(profile);
-      return { success: true, user: profile };
+      const registeredUser = await StorageService.getInstance().registerOrLoginUser(
+        fullName.trim() || 'مواطن كريم',
+        formattedPhone
+      );
+      persistUserSession(registeredUser);
+      return { success: true, user: registeredUser };
     } catch (err: unknown) {
       console.error('Direct phone register note:', err);
-      // Fallback local registration
       const profile: User = {
         id: `user_${Date.now()}`,
         fullName: fullName.trim() || 'مواطن كريم',
@@ -336,26 +326,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     persistUserSession(updated);
   };
 
+  // Change current user's role directly (e.g. promoting 'osama' to moderator)
+  const changeCurrentUserRole = async (newRole: UserRole) => {
+    if (!currentUser) return;
+    const updated: User = {
+      ...currentUser,
+      role: newRole,
+    };
+    try {
+      await updateDoc(doc(db, 'users', currentUser.id), { role: newRole });
+    } catch (e) {
+      console.warn('Could not update role in Firestore', e);
+    }
+    await StorageService.getInstance().updateUserRole(currentUser.id, newRole);
+    persistUserSession(updated);
+  };
+
   // Switch persona for evaluation & moderation testing
   const switchDevPersona = async (role: UserRole) => {
-    const anonUser = await tryAnonymousAuth();
-    const uid = anonUser?.uid || `dev_${role}_qalqilya`;
-
-    const demoNames: Record<UserRole, string> = {
-      admin: 'المهندس أحمد نزال (مدير المنظومة)',
-      moderator: 'الأستاذ سامر شريم (مشرف المحتوى)',
-      user: 'خالد صبري (مواطن)',
+    const demoProfiles: Record<UserRole, { id: string; name: string; phone: string }> = {
+      admin: {
+        id: 'admin_qalqilya_ahmad',
+        name: 'المهندس أحمد نزال (مدير المنظومة)',
+        phone: '+970599112233',
+      },
+      moderator: {
+        id: 'moderator_qalqilya_samer',
+        name: 'الأستاذ سامر شريم (مشرف المحتوى)',
+        phone: '+970598445566',
+      },
+      user: {
+        id: 'user_qalqilya_khaled',
+        name: 'خالد صبري (مواطن)',
+        phone: '+970597778899',
+      },
     };
-    const demoPhone: Record<UserRole, string> = {
-      admin: '+970599112233',
-      moderator: '+970598445566',
-      user: '+970597778899',
-    };
 
+    const target = demoProfiles[role];
     const devUser: User = {
-      id: uid,
-      fullName: demoNames[role],
-      phone: demoPhone[role],
+      id: target.id,
+      fullName: target.name,
+      phone: target.phone,
       role,
       createdAt: new Date().toISOString(),
       announcementsCount: 3,
@@ -364,7 +375,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     try {
-      await setDoc(doc(db, 'users', uid), devUser);
+      await setDoc(doc(db, 'users', target.id), devUser);
     } catch (e) {
       console.warn('Could not write dev persona to Firestore', e);
     }
@@ -393,6 +404,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         directPhoneRegister,
         logout,
         updateProfileName,
+        changeCurrentUserRole,
         switchDevPersona,
       }}
     >

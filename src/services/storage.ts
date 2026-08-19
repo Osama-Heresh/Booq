@@ -4,10 +4,7 @@ import {
   getDocs,
   setDoc,
   updateDoc,
-  deleteDoc,
   onSnapshot,
-  query,
-  where,
   Unsubscribe,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase/config';
@@ -15,19 +12,34 @@ import { Announcement, AnnouncementStatus, CategoryType, ModeratorActionLog, Use
 import { INITIAL_ANNOUNCEMENTS, INITIAL_USERS } from '../data/seedData';
 import { WhatsAppService } from './whatsapp/whatsappService';
 
+const LOCAL_STORAGE_ANNOUNCEMENTS_KEY = 'bouq_announcements_cache_v2';
+const LOCAL_STORAGE_USERS_KEY = 'bouq_users_cache_v2';
+
+/**
+ * Sanitizes an object by recursively stripping out `undefined` values.
+ * Firestore will reject documents containing `undefined` properties.
+ */
+function sanitizeForFirestore<T>(data: T): T {
+  return JSON.parse(
+    JSON.stringify(data, (_, val) => (val === undefined ? null : val))
+  );
+}
+
 export class StorageService {
   private static instance: StorageService;
-  private announcements: Announcement[] = [...INITIAL_ANNOUNCEMENTS];
-  private users: User[] = [...INITIAL_USERS];
+  private announcements: Announcement[] = [];
+  private users: User[] = [];
   private auditLogs: ModeratorActionLog[] = [];
   private subscribers: (() => void)[] = [];
   private isFirestoreSynced = false;
   private isSeeding = false;
   private authUser: User | null = null;
   private announcementsUnsub: Unsubscribe | null = null;
-  private userAnnouncementsUnsub: Unsubscribe | null = null;
+  private usersUnsub: Unsubscribe | null = null;
+  private auditUnsub: Unsubscribe | null = null;
 
   private constructor() {
+    this.loadInitialData();
     this.initFirestoreSync();
   }
 
@@ -39,76 +51,129 @@ export class StorageService {
   }
 
   /**
-   * Set current authenticated user to adjust Firestore listeners
+   * Load cached data or fall back to seed data
    */
-  public setAuthUser(user: User | null) {
-    this.authUser = user;
-    this.setupAnnouncementsListener();
+  private loadInitialData() {
+    try {
+      const cachedAnn = localStorage.getItem(LOCAL_STORAGE_ANNOUNCEMENTS_KEY);
+      if (cachedAnn) {
+        const parsed = JSON.parse(cachedAnn);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.announcements = parsed;
+        } else {
+          this.announcements = [...INITIAL_ANNOUNCEMENTS];
+        }
+      } else {
+        this.announcements = [...INITIAL_ANNOUNCEMENTS];
+      }
+    } catch {
+      this.announcements = [...INITIAL_ANNOUNCEMENTS];
+    }
+
+    try {
+      const cachedUsers = localStorage.getItem(LOCAL_STORAGE_USERS_KEY);
+      if (cachedUsers) {
+        const parsed = JSON.parse(cachedUsers);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.users = parsed;
+        } else {
+          this.users = [...INITIAL_USERS];
+        }
+      } else {
+        this.users = [...INITIAL_USERS];
+      }
+    } catch {
+      this.users = [...INITIAL_USERS];
+    }
+  }
+
+  private saveToLocalStorage() {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_ANNOUNCEMENTS_KEY, JSON.stringify(this.announcements));
+      localStorage.setItem(LOCAL_STORAGE_USERS_KEY, JSON.stringify(this.users));
+    } catch (e) {
+      console.warn('LocalStorage save warning:', e);
+    }
   }
 
   /**
-   * Connect to Firestore collections and sync in real time
+   * Set current authenticated user to adjust context if needed
+   */
+  public setAuthUser(user: User | null) {
+    this.authUser = user;
+    this.notifyChange();
+  }
+
+  /**
+   * Connect to Firestore collections and sync all data in real time
    */
   private async initFirestoreSync() {
     if (this.isFirestoreSynced) return;
     this.isFirestoreSynced = true;
 
-    // 1. Initial seed check for fresh preview environments
+    // 1. Real-time onSnapshot for ALL announcements
     try {
-      const q = query(collection(db, 'announcements'), where('status', 'in', ['published', 'completed', 'expired']));
-      const annSnap = await getDocs(q);
-      if (annSnap.empty && !this.isSeeding) {
-        this.isSeeding = true;
-        for (const ann of INITIAL_ANNOUNCEMENTS) {
-          try {
-            await setDoc(doc(db, 'announcements', ann.id), {
-              ...ann,
-              isDemo: true,
+      this.announcementsUnsub = onSnapshot(
+        collection(db, 'announcements'),
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const list: Announcement[] = [];
+            snapshot.forEach((docSnap) => {
+              list.push(docSnap.data() as Announcement);
             });
-          } catch {
-            // Ignored if unauthenticated
+
+            // Merge with local announcements to preserve newly created ones
+            const map = new Map<string, Announcement>();
+            this.announcements.forEach((a) => map.set(a.id, a));
+            list.forEach((a) => map.set(a.id, a));
+
+            this.announcements = Array.from(map.values()).sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+            this.saveToLocalStorage();
+            this.notifyChange();
+          } else if (!this.isSeeding) {
+            // Seed initial announcements
+            this.seedInitialFirestoreData();
           }
+        },
+        (error) => {
+          console.warn('Firestore announcements listener notice:', error.message);
         }
-        this.isSeeding = false;
-      }
+      );
     } catch (err) {
-      console.warn('Firestore announcements seed note:', err);
+      console.warn('Error attaching announcements listener:', err);
     }
 
-    // 2. Setup announcements listener
-    this.setupAnnouncementsListener();
-
-    // 3. Sync Users collection for moderators/admins
+    // 2. Real-time onSnapshot for Users collection
     try {
-      onSnapshot(
+      this.usersUnsub = onSnapshot(
         collection(db, 'users'),
         (snapshot) => {
-          const list: User[] = [];
-          snapshot.forEach((docSnap) => {
-            list.push(docSnap.data() as User);
-          });
-          if (list.length > 0) {
-            // Merge with local list
+          if (!snapshot.empty) {
+            const list: User[] = [];
+            snapshot.forEach((docSnap) => {
+              list.push(docSnap.data() as User);
+            });
             const map = new Map<string, User>();
             this.users.forEach((u) => map.set(u.id, u));
             list.forEach((u) => map.set(u.id, u));
             this.users = Array.from(map.values());
+            this.saveToLocalStorage();
             this.notifyChange();
           }
         },
         (error) => {
-          if (error.code !== 'permission-denied') {
-            console.warn('Firestore users listener notice:', error.message);
-          }
+          console.warn('Firestore users listener notice:', error.message);
         }
       );
     } catch (err) {
-      console.warn('Error attaching users listener', err);
+      console.warn('Error attaching users listener:', err);
     }
 
-    // 4. Real-time onSnapshot for Moderation Actions
+    // 3. Real-time onSnapshot for Moderation Actions
     try {
-      onSnapshot(
+      this.auditUnsub = onSnapshot(
         collection(db, 'moderationActions'),
         (snapshot) => {
           const list: ModeratorActionLog[] = [];
@@ -120,122 +185,27 @@ export class StorageService {
           this.notifyChange();
         },
         (error) => {
-          if (error.code !== 'permission-denied') {
-            console.warn('Firestore moderationActions listener notice:', error.message);
-          }
+          console.warn('Firestore moderationActions listener notice:', error.message);
         }
       );
     } catch (err) {
-      console.warn('Error attaching audit listener', err);
+      console.warn('Error attaching audit listener:', err);
     }
   }
 
-  private setupAnnouncementsListener() {
-    if (this.announcementsUnsub) {
-      this.announcementsUnsub();
-      this.announcementsUnsub = null;
-    }
-    if (this.userAnnouncementsUnsub) {
-      this.userAnnouncementsUnsub();
-      this.userAnnouncementsUnsub = null;
-    }
-
-    const isModOrAdmin = this.authUser?.role === 'moderator' || this.authUser?.role === 'admin';
-
-    if (isModOrAdmin) {
-      // Moderator / Admin query: fetch all announcements
-      try {
-        this.announcementsUnsub = onSnapshot(
-          collection(db, 'announcements'),
-          (snapshot) => {
-            const list: Announcement[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as Announcement);
-            });
-            list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-            this.announcements = list;
-            this.notifyChange();
-          },
-          (err) => {
-            console.warn('Moderator announcements sync note:', err.message);
-          }
-        );
-      } catch (e) {
-        console.warn('Error in moderator announcements listener', e);
+  private async seedInitialFirestoreData() {
+    this.isSeeding = true;
+    try {
+      for (const ann of INITIAL_ANNOUNCEMENTS) {
+        await setDoc(doc(db, 'announcements', ann.id), sanitizeForFirestore({ ...ann, isDemo: true }));
       }
-    } else {
-      // Public query: fetch published/completed/expired
-      try {
-        const publicQuery = query(
-          collection(db, 'announcements'),
-          where('status', 'in', ['published', 'completed', 'expired'])
-        );
-        this.announcementsUnsub = onSnapshot(
-          publicQuery,
-          (snapshot) => {
-            const publicList: Announcement[] = [];
-            snapshot.forEach((docSnap) => {
-              publicList.push(docSnap.data() as Announcement);
-            });
-
-            // Merge with any existing user submissions in memory
-            const map = new Map<string, Announcement>();
-            publicList.forEach((a) => map.set(a.id, a));
-            this.announcements.forEach((a) => {
-              if (this.authUser && a.createdByUserId === this.authUser.id) {
-                map.set(a.id, a);
-              }
-            });
-
-            const merged = Array.from(map.values()).sort(
-              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-            );
-            this.announcements = merged;
-            this.notifyChange();
-          },
-          (err) => {
-            console.warn('Public announcements sync note:', err.message);
-          }
-        );
-      } catch (e) {
-        console.warn('Error in public announcements listener', e);
+      for (const u of INITIAL_USERS) {
+        await setDoc(doc(db, 'users', u.id), sanitizeForFirestore(u));
       }
-
-      // If user is authenticated, also listen for user's own submissions
-      if (this.authUser) {
-        try {
-          const userQuery = query(
-            collection(db, 'announcements'),
-            where('createdByUserId', '==', this.authUser.id)
-          );
-          this.userAnnouncementsUnsub = onSnapshot(
-            userQuery,
-            (snapshot) => {
-              const userList: Announcement[] = [];
-              snapshot.forEach((docSnap) => {
-                userList.push(docSnap.data() as Announcement);
-              });
-
-              const map = new Map<string, Announcement>();
-              this.announcements.forEach((a) => map.set(a.id, a));
-              userList.forEach((a) => map.set(a.id, a));
-
-              const merged = Array.from(map.values()).sort(
-                (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-              );
-              this.announcements = merged;
-              this.notifyChange();
-            },
-            (err) => {
-              if (err.code !== 'permission-denied') {
-                console.warn('User announcements sync note:', err.message);
-              }
-            }
-          );
-        } catch (e) {
-          console.warn('Error in user announcements listener', e);
-        }
-      }
+    } catch (e) {
+      console.warn('Initial seeding note:', e);
+    } finally {
+      this.isSeeding = false;
     }
   }
 
@@ -247,16 +217,27 @@ export class StorageService {
   }
 
   private notifyChange() {
-    this.subscribers.forEach((cb) => cb());
+    this.subscribers.forEach((cb) => {
+      try {
+        cb();
+      } catch (err) {
+        console.error('Error in subscriber callback', err);
+      }
+    });
   }
 
   public async resetToSeedData(): Promise<void> {
     try {
+      this.announcements = [...INITIAL_ANNOUNCEMENTS];
+      this.users = [...INITIAL_USERS];
+      this.saveToLocalStorage();
+      this.notifyChange();
+
       for (const ann of INITIAL_ANNOUNCEMENTS) {
-        await setDoc(doc(db, 'announcements', ann.id), { ...ann, isDemo: true });
+        await setDoc(doc(db, 'announcements', ann.id), sanitizeForFirestore({ ...ann, isDemo: true }));
       }
       for (const u of INITIAL_USERS) {
-        await setDoc(doc(db, 'users', u.id), u);
+        await setDoc(doc(db, 'users', u.id), sanitizeForFirestore(u));
       }
       WhatsAppService.getInstance().clearLogs();
     } catch (e) {
@@ -305,28 +286,31 @@ export class StorageService {
       whatsappDeliveryStatus: 'pending',
     };
 
-    // Optimistic memory update
-    this.announcements.unshift(created);
+    // Update memory and cache immediately
+    this.announcements = [created, ...this.announcements.filter((a) => a.id !== newId)];
+    this.saveToLocalStorage();
     this.notifyChange();
 
-    // Persist to Firestore
+    // Persist cleanly to Firestore
     try {
-      await setDoc(doc(db, 'announcements', newId), created);
+      const sanitized = sanitizeForFirestore(created);
+      await setDoc(doc(db, 'announcements', newId), sanitized);
 
-      // Try incrementing user announcementsCount
+      // Increment user announcementsCount
       const user = this.users.find((u) => u.id === announcement.createdByUserId);
       if (user) {
+        user.announcementsCount = (user.announcementsCount || 0) + 1;
+        this.saveToLocalStorage();
         try {
           await updateDoc(doc(db, 'users', user.id), {
-            announcementsCount: (user.announcementsCount || 0) + 1,
+            announcementsCount: user.announcementsCount,
           });
         } catch {
-          // Ignored
+          // Ignore
         }
       }
     } catch (err) {
-      console.warn('Firestore write warning for createAnnouncement:', err);
-      // Still return the created announcement so the user is not stuck
+      console.warn('Firestore write notice for createAnnouncement:', err);
     }
 
     return created;
@@ -348,12 +332,13 @@ export class StorageService {
       updatedAt: now,
     };
 
-    // Update in memory
     this.announcements = this.announcements.map((a) => (a.id === id ? updated : a));
+    this.saveToLocalStorage();
     this.notifyChange();
 
     try {
-      await setDoc(doc(db, 'announcements', id), updated);
+      const sanitized = sanitizeForFirestore(updated);
+      await setDoc(doc(db, 'announcements', id), sanitized);
 
       if (moderatorId) {
         const user = this.getUserById(moderatorId);
@@ -369,10 +354,10 @@ export class StorageService {
           timestamp: now,
           whatsappDelivered: false,
         };
-        await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+        await setDoc(doc(db, 'moderationActions', auditLog.id), sanitizeForFirestore(auditLog));
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+      console.warn('Firestore updateAnnouncement warning:', err);
     }
 
     return updated;
@@ -386,7 +371,6 @@ export class StorageService {
    * 4. Update WhatsApp delivery status (sent / failed)
    * 
    * CRITICAL GUARANTEE: If WhatsApp delivery fails, announcement REMAINS PUBLISHED.
-   * whatsappDeliveryStatus is marked as 'failed', error is stored, and moderator can retry later.
    */
   public async approveAndPublishAnnouncement(
     id: string,
@@ -412,15 +396,14 @@ export class StorageService {
       whatsappGroupId: destination.id,
     };
 
-    // Update in memory immediately
     this.announcements = this.announcements.map((a) => (a.id === id ? publishedAnnouncement : a));
+    this.saveToLocalStorage();
     this.notifyChange();
 
-    // Save initial published state
     try {
-      await setDoc(doc(db, 'announcements', id), publishedAnnouncement);
+      await setDoc(doc(db, 'announcements', id), sanitizeForFirestore(publishedAnnouncement));
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+      console.warn('Firestore save notice:', err);
     }
 
     // STEP 3: Attempt WhatsApp delivery
@@ -451,12 +434,12 @@ export class StorageService {
     };
 
     this.announcements = this.announcements.map((a) => (a.id === id ? finalAnnouncement : a));
+    this.saveToLocalStorage();
     this.notifyChange();
 
     try {
-      await setDoc(doc(db, 'announcements', id), finalAnnouncement);
+      await setDoc(doc(db, 'announcements', id), sanitizeForFirestore(finalAnnouncement));
 
-      // Record Moderator Audit Log
       const auditLog: ModeratorActionLog = {
         id: `audit_${Date.now()}`,
         announcementId: id,
@@ -468,9 +451,9 @@ export class StorageService {
         timestamp: now,
         whatsappDelivered: waSuccess,
       };
-      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+      await setDoc(doc(db, 'moderationActions', auditLog.id), sanitizeForFirestore(auditLog));
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+      console.warn('Firestore audit save warning:', err);
     }
 
     return {
@@ -506,9 +489,10 @@ export class StorageService {
       };
 
       this.announcements = this.announcements.map((a) => (a.id === id ? updated : a));
+      this.saveToLocalStorage();
       this.notifyChange();
 
-      await setDoc(doc(db, 'announcements', id), updated);
+      await setDoc(doc(db, 'announcements', id), sanitizeForFirestore(updated));
 
       const auditLog: ModeratorActionLog = {
         id: `audit_retry_${Date.now()}`,
@@ -522,7 +506,7 @@ export class StorageService {
         reason: waResult.success ? 'إعادة إرسال واتساب بنجاح' : 'إعادة محاولة إرسال واتساب',
         whatsappDelivered: waResult.success,
       };
-      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+      await setDoc(doc(db, 'moderationActions', auditLog.id), sanitizeForFirestore(auditLog));
 
       return {
         success: waResult.success,
@@ -561,10 +545,11 @@ export class StorageService {
     };
 
     this.announcements = this.announcements.map((a) => (a.id === id ? updatedAnnouncement : a));
+    this.saveToLocalStorage();
     this.notifyChange();
 
     try {
-      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
+      await setDoc(doc(db, 'announcements', id), sanitizeForFirestore(updatedAnnouncement));
 
       const auditLog: ModeratorActionLog = {
         id: `audit_${Date.now()}`,
@@ -578,9 +563,9 @@ export class StorageService {
         timestamp: now,
         whatsappDelivered: false,
       };
-      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+      await setDoc(doc(db, 'moderationActions', auditLog.id), sanitizeForFirestore(auditLog));
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+      console.warn('Firestore rejectAnnouncement warning:', err);
     }
 
     return updatedAnnouncement;
@@ -610,10 +595,11 @@ export class StorageService {
     };
 
     this.announcements = this.announcements.map((a) => (a.id === id ? updatedAnnouncement : a));
+    this.saveToLocalStorage();
     this.notifyChange();
 
     try {
-      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
+      await setDoc(doc(db, 'announcements', id), sanitizeForFirestore(updatedAnnouncement));
 
       const auditLog: ModeratorActionLog = {
         id: `audit_${Date.now()}`,
@@ -627,9 +613,9 @@ export class StorageService {
         timestamp: now,
         whatsappDelivered: false,
       };
-      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+      await setDoc(doc(db, 'moderationActions', auditLog.id), sanitizeForFirestore(auditLog));
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+      console.warn('Firestore requestModification warning:', err);
     }
 
     return updatedAnnouncement;
@@ -656,10 +642,11 @@ export class StorageService {
     };
 
     this.announcements = this.announcements.map((a) => (a.id === id ? updatedAnnouncement : a));
+    this.saveToLocalStorage();
     this.notifyChange();
 
     try {
-      await setDoc(doc(db, 'announcements', id), updatedAnnouncement);
+      await setDoc(doc(db, 'announcements', id), sanitizeForFirestore(updatedAnnouncement));
 
       const auditLog: ModeratorActionLog = {
         id: `audit_${Date.now()}`,
@@ -673,9 +660,9 @@ export class StorageService {
         timestamp: now,
         whatsappDelivered: false,
       };
-      await setDoc(doc(db, 'moderationActions', auditLog.id), auditLog);
+      await setDoc(doc(db, 'moderationActions', auditLog.id), sanitizeForFirestore(auditLog));
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `announcements/${id}`);
+      console.warn('Firestore markStatus warning:', err);
     }
 
     return updatedAnnouncement;
@@ -710,14 +697,19 @@ export class StorageService {
         status: 'active',
         verified: true,
       };
+      this.users.push(user);
     } else {
       if (fullName && user.fullName !== fullName.trim()) {
         user = { ...user, fullName: fullName.trim() };
+        this.users = this.users.map((u) => (u.id === user?.id ? user! : u));
       }
     }
 
+    this.saveToLocalStorage();
+    this.notifyChange();
+
     try {
-      await setDoc(doc(db, 'users', user.id), user);
+      await setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user));
     } catch (err) {
       console.warn('User doc save notice:', err);
     }
@@ -726,14 +718,22 @@ export class StorageService {
   }
 
   public async updateUserRole(userId: string, newRole: 'user' | 'moderator' | 'admin'): Promise<void> {
+    this.users = this.users.map((u) => (u.id === userId ? { ...u, role: newRole } : u));
+    
+    // If updating current active user
+    if (this.authUser && this.authUser.id === userId) {
+      this.authUser = { ...this.authUser, role: newRole };
+    }
+
+    this.saveToLocalStorage();
+    this.notifyChange();
+
     try {
       await updateDoc(doc(db, 'users', userId), {
         role: newRole,
       });
-      this.users = this.users.map((u) => (u.id === userId ? { ...u, role: newRole } : u));
-      this.notifyChange();
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${userId}`);
+      console.warn('User role update notice in Firestore:', err);
     }
   }
 
@@ -746,7 +746,7 @@ export class StorageService {
     const farhaCount = this.announcements.filter((a) => a.category === 'farha').length;
     const tarhaCount = this.announcements.filter((a) => a.category === 'tarha').length;
     const fazaaCount = this.announcements.filter((a) => a.category === 'fazaa').length;
-    const pendingCount = this.announcements.filter((a) => a.status === 'pending_review').length;
+    const pendingCount = this.announcements.filter((a) => a.status === 'pending_review' || a.status === 'needs_modification').length;
     const publishedCount = this.announcements.filter((a) => a.status === 'published').length;
     const urgentFazaaCount = this.announcements.filter(
       (a) =>
