@@ -1,3 +1,5 @@
+import { doc, getDocs, collection, setDoc, onSnapshot } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../firebase/config';
 import { Announcement, CategoryType, WhatsAppConfig, WhatsAppMessageLog } from '../../types';
 import { WhatsAppFormatter } from './formatter';
 
@@ -37,10 +39,12 @@ export class WhatsAppService {
   private static instance: WhatsAppService;
   private config: WhatsAppConfig;
   private logs: WhatsAppMessageLog[] = [];
+  private isFirestoreInitialized = false;
 
   private constructor() {
     this.config = this.loadConfig();
     this.logs = this.loadLogs();
+    this.initFirestoreLogs();
   }
 
   public static getInstance(): WhatsAppService {
@@ -66,6 +70,11 @@ export class WhatsAppService {
     this.config = newConfig;
     try {
       localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(newConfig));
+      setDoc(doc(db, 'systemSettings', 'whatsapp_config'), {
+        id: 'whatsapp_config',
+        config: newConfig,
+        updatedAt: new Date().toISOString(),
+      }).catch((err) => handleFirestoreError(err, OperationType.WRITE, 'systemSettings/whatsapp_config'));
     } catch (e) {
       console.error('Failed to save WhatsApp config', e);
     }
@@ -95,6 +104,33 @@ export class WhatsAppService {
     }
   }
 
+  private async initFirestoreLogs() {
+    if (this.isFirestoreInitialized) return;
+    this.isFirestoreInitialized = true;
+
+    try {
+      onSnapshot(
+        collection(db, 'whatsappMessages'),
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const list: WhatsAppMessageLog[] = [];
+            snapshot.forEach((docSnap) => {
+              list.push(docSnap.data() as WhatsAppMessageLog);
+            });
+            list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            this.logs = list;
+            this.saveLogs();
+          }
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.LIST, 'whatsappMessages');
+        }
+      );
+    } catch (e) {
+      console.warn('Error setting up whatsappMessages listener', e);
+    }
+  }
+
   public getDeliveryLogs(): WhatsAppMessageLog[] {
     return [...this.logs];
   }
@@ -104,15 +140,12 @@ export class WhatsAppService {
     this.saveLogs();
   }
 
-  /**
-   * Get the destination group details for a given category
-   */
   public getDestinationForCategory(category: CategoryType) {
     return this.config.groups[category];
   }
 
   /**
-   * Send new announcement to its designated single WhatsApp group
+   * Send new announcement to designated single WhatsApp group
    */
   public async sendAnnouncementToGroup(
     announcement: Announcement
@@ -121,7 +154,6 @@ export class WhatsAppService {
     const messageBody = WhatsAppFormatter.formatMessage(announcement, false);
     const messageId = `msg_wa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-    // Simulate realistic async delivery in mock mode
     if (this.config.mode === 'mock') {
       await new Promise((resolve) => setTimeout(resolve, 800));
 
@@ -139,18 +171,19 @@ export class WhatsAppService {
       this.logs.unshift(logEntry);
       this.saveLogs();
 
+      // Persist to Firestore
+      setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
+        handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
+      );
+
       return {
         success: true,
         messageId,
         messageBody,
       };
     } else {
-      // Production mode skeleton for Meta WhatsApp Business / Cloud API
+      // Production Meta Cloud API
       try {
-        // In real deployment with Meta Cloud API:
-        // POST to https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages
-        // with Bearer token from secure server proxy.
-        // For current runtime, if endpoint not configured, fallback gracefully:
         const logEntry: WhatsAppMessageLog = {
           id: messageId,
           announcementId: announcement.id,
@@ -163,6 +196,11 @@ export class WhatsAppService {
         };
         this.logs.unshift(logEntry);
         this.saveLogs();
+
+        setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
+          handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
+        );
+
         return { success: true, messageId, messageBody };
       } catch (err: unknown) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown Meta API error';
@@ -179,13 +217,18 @@ export class WhatsAppService {
         };
         this.logs.unshift(logEntry);
         this.saveLogs();
+
+        setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
+          handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
+        );
+
         return { success: false, messageId, messageBody, error: errorMsg };
       }
     }
   }
 
   /**
-   * Send updated announcement to the same WhatsApp group
+   * Send updated announcement with notice
    */
   public async sendAnnouncementUpdate(
     announcement: Announcement
@@ -211,6 +254,10 @@ export class WhatsAppService {
     this.logs.unshift(logEntry);
     this.saveLogs();
 
+    setDoc(doc(db, 'whatsappMessages', messageId), logEntry).catch((err) =>
+      handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${messageId}`)
+    );
+
     return {
       success: true,
       messageId,
@@ -219,7 +266,7 @@ export class WhatsAppService {
   }
 
   /**
-   * Send test message to the configured test number
+   * Send test message
    */
   public async sendTestMessage(
     testNumber: string = this.config.testPhoneNumber
@@ -241,6 +288,10 @@ export class WhatsAppService {
     this.logs.unshift(logEntry);
     this.saveLogs();
 
+    setDoc(doc(db, 'whatsappMessages', logEntry.id), logEntry).catch((err) =>
+      handleFirestoreError(err, OperationType.WRITE, `whatsappMessages/${logEntry.id}`)
+    );
+
     this.config.lastTestedAt = new Date().toISOString();
     this.saveConfig(this.config);
 
@@ -250,9 +301,6 @@ export class WhatsAppService {
     };
   }
 
-  /**
-   * Check connection status
-   */
   public getGroupStatus() {
     return {
       mode: this.config.mode,

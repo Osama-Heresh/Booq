@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 1. Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 2. Announcements collection
+    match /announcements/{announcementId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // 3. Moderation Actions Audit Trail
+    match /moderationActions/{actionId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 4. WhatsApp Messages Dispatch Log
+    match /whatsappMessages/{messageId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 5. System Audit Logs
+    match /auditLogs/{logId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 6. System Settings
+    match /systemSettings/{settingId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

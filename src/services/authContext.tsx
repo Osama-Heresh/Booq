@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, UserRole } from '../types';
+import { User } from '../types';
 import { StorageService } from './storage';
 import { INITIAL_USERS } from '../data/seedData';
+import { testConnection } from './firebase/config';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -25,6 +26,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const storage = StorageService.getInstance();
 
   useEffect(() => {
+    // Test Firebase connection on initial boot
+    testConnection();
+
     const savedUserId = localStorage.getItem(AUTH_USER_KEY);
     if (savedUserId) {
       const user = storage.getUserById(savedUserId);
@@ -33,21 +37,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
     }
-    // Default to admin for seamless evaluation/testing
+    // Default to admin for seamless evaluation
     const defaultAdmin = storage.getUserById('user_admin_01') || INITIAL_USERS[0];
     setCurrentUser(defaultAdmin);
   }, []);
+
+  // Subscribe to storage changes so if current user count changes, it updates
+  useEffect(() => {
+    const unsub = storage.subscribe(() => {
+      if (currentUser) {
+        const fresh = storage.getUserById(currentUser.id);
+        if (fresh) {
+          setCurrentUser(fresh);
+        }
+      }
+    });
+    return unsub;
+  }, [currentUser]);
 
   const loginWithPhone = async (phone: string): Promise<{ success: boolean; requiresOtp?: boolean; error?: string }> => {
     if (!phone || phone.trim().length < 8) {
       return { success: false, error: 'يرجى إدخال رقم هاتف صحيح' };
     }
-    // Simple MVP flow: Return OTP required (simulated code 1234)
     return { success: true, requiresOtp: true };
   };
 
   const verifyOtp = async (phone: string, otpCode: string, fullName?: string): Promise<{ success: boolean; user?: User; error?: string }> => {
-    // Accepts 1234 or any 4 digit code for smooth testing
     if (otpCode.length !== 4) {
       return { success: false, error: 'رمز التحقق يجب أن يتكون من 4 أرقام' };
     }

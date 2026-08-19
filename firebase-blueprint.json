@@ -1,0 +1,137 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access control and contact information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "maxLength": 150 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "role": { "type": "string", "enum": ["admin", "moderator", "user"] },
+        "announcementsCount": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "fullName", "phone", "role"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Community announcement in Qalqilya categorized into farha, tarha, or fazaa",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "enum": ["farha", "tarha", "fazaa"] },
+        "title": { "type": "string", "maxLength": 300 },
+        "city": { "type": "string", "maxLength": 100 },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "pending_review", "published", "rejected", "needs_modification", "completed", "expired"]
+        },
+        "createdByUserId": { "type": "string", "maxLength": 128 },
+        "createdByUserName": { "type": "string", "maxLength": 150 },
+        "createdByUserPhone": { "type": "string", "maxLength": 30 },
+        "contact": { "type": "object" },
+        "farhaDetails": { "type": "object" },
+        "tarhaDetails": { "type": "object" },
+        "fazaaDetails": { "type": "object" },
+        "moderation": { "type": "object" },
+        "whatsAppDelivery": { "type": "object" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "publishedAt": { "type": "string" },
+        "isDemo": { "type": "boolean" }
+      },
+      "required": ["id", "category", "title", "city", "status", "createdByUserId", "createdByUserName", "contact", "createdAt", "updatedAt"]
+    },
+    "ModerationAction": {
+      "title": "ModerationAction",
+      "description": "Audit record of moderation decisions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "announcementId": { "type": "string", "maxLength": 128 },
+        "moderatorId": { "type": "string", "maxLength": 128 },
+        "moderatorName": { "type": "string", "maxLength": 150 },
+        "action": { "type": "string", "enum": ["approve_and_publish", "reject", "request_modification", "unpublish", "delete"] },
+        "reason": { "type": "string", "maxLength": 1000 },
+        "previousStatus": { "type": "string" },
+        "newStatus": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "announcementId", "moderatorId", "moderatorName", "action", "timestamp"]
+    },
+    "WhatsAppMessage": {
+      "title": "WhatsAppMessage",
+      "description": "Log entry of WhatsApp group dispatch",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "announcementId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "enum": ["farha", "tarha", "fazaa"] },
+        "groupName": { "type": "string", "maxLength": 200 },
+        "destinationGroupId": { "type": "string", "maxLength": 200 },
+        "messageBody": { "type": "string", "maxLength": 5000 },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string", "enum": ["simulated", "delivered", "failed", "pending"] },
+        "errorMessage": { "type": "string" },
+        "isUpdate": { "type": "boolean" }
+      },
+      "required": ["id", "announcementId", "category", "groupName", "messageBody", "timestamp", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System activity logs for audits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "actorId": { "type": "string", "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 150 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "required": ["id", "type", "description", "timestamp"]
+    },
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Application and WhatsApp configuration parameters",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "config": { "type": "object" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "config"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Registered user accounts and roles"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Community announcements database"
+    },
+    "/moderationActions/{actionId}": {
+      "schema": "ModerationAction",
+      "description": "Audit trail of moderator actions"
+    },
+    "/whatsappMessages/{messageId}": {
+      "schema": "WhatsAppMessage",
+      "description": "History of dispatched WhatsApp messages"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "System-wide activity audit logs"
+    },
+    "/systemSettings/{settingId}": {
+      "schema": "SystemSetting",
+      "description": "System configuration flags and WhatsApp group details"
+    }
+  }
+}
