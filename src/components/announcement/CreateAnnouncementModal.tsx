@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { CategoryType, ContactInfo, FarhaDetails, FazaaDetails, TarhaDetails } from '../../types';
 import { useAuth } from '../../services/authContext';
 import { StorageService } from '../../services/storage';
@@ -21,7 +21,7 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
   initialCategory,
   onAnnouncementCreated,
 }) => {
-  const { currentUser, isAuthenticated } = useAuth();
+  const { currentUser } = useAuth();
   const [category, setCategory] = useState<CategoryType | null>(initialCategory || null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -33,6 +33,63 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
     contact: ContactInfo;
   } | null>(null);
 
+  const executeSubmission = useCallback(
+    async (
+      data: {
+        title: string;
+        details: FarhaDetails | TarhaDetails | FazaaDetails;
+        contact: ContactInfo;
+      },
+      user: { id: string; fullName: string; phone?: string }
+    ) => {
+      if (!category) return;
+      setIsSubmitting(true);
+      setSubmissionError(null);
+
+      try {
+        const storage = StorageService.getInstance();
+        const newAnn = await storage.createAnnouncement({
+          category,
+          title: data.title,
+          city: 'قلقيلية',
+          createdByUserId: user.id,
+          createdByUserName: user.fullName || 'مواطن كريم',
+          createdByUserPhone: user.phone || data.contact.phone || '',
+          contact: data.contact,
+          farhaDetails: category === 'farha' ? (data.details as FarhaDetails) : undefined,
+          tarhaDetails: category === 'tarha' ? (data.details as TarhaDetails) : undefined,
+          fazaaDetails: category === 'fazaa' ? (data.details as FazaaDetails) : undefined,
+        });
+
+        setSuccessResult({
+          id: newAnn.id,
+          title: newAnn.title,
+          category: newAnn.category,
+        });
+        setPendingFormData(null);
+        setIsAuthOpen(false);
+        onAnnouncementCreated();
+      } catch (err: unknown) {
+        console.error('Failed to submit announcement', err);
+        const msg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع أثناء حفظ الإعلان';
+        setSubmissionError(msg);
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [category, onAnnouncementCreated]
+  );
+
+  // If user just logged in and had pending form data, submit immediately
+  useEffect(() => {
+    if (currentUser && pendingFormData && !isSubmitting && !successResult) {
+      const dataToSubmit = pendingFormData;
+      setPendingFormData(null);
+      setIsAuthOpen(false);
+      executeSubmission(dataToSubmit, currentUser);
+    }
+  }, [currentUser, pendingFormData, isSubmitting, successResult, executeSubmission]);
+
   if (!isOpen) return null;
 
   const handleFormSubmit = async (data: {
@@ -43,44 +100,13 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
     if (!category) return;
     setSubmissionError(null);
 
-    // If user is not logged in, save form data and prompt authentication
     if (!currentUser) {
       setPendingFormData(data);
       setIsAuthOpen(true);
       return;
     }
 
-    setIsSubmitting(true);
-
-    try {
-      const storage = StorageService.getInstance();
-      const newAnn = await storage.createAnnouncement({
-        category,
-        title: data.title,
-        city: 'قلقيلية',
-        createdByUserId: currentUser.id,
-        createdByUserName: currentUser.fullName || 'مواطن كريم',
-        createdByUserPhone: currentUser.phone || data.contact.phone || '',
-        contact: data.contact,
-        farhaDetails: category === 'farha' ? (data.details as FarhaDetails) : undefined,
-        tarhaDetails: category === 'tarha' ? (data.details as TarhaDetails) : undefined,
-        fazaaDetails: category === 'fazaa' ? (data.details as FazaaDetails) : undefined,
-      });
-
-      setSuccessResult({
-        id: newAnn.id,
-        title: newAnn.title,
-        category: newAnn.category,
-      });
-      setPendingFormData(null);
-      onAnnouncementCreated();
-    } catch (err: unknown) {
-      console.error('Failed to submit announcement', err);
-      const msg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع أثناء حفظ الإعلان';
-      setSubmissionError(msg);
-    } finally {
-      setIsSubmitting(false);
-    }
+    await executeSubmission(data, currentUser);
   };
 
   const handleResetAndClose = () => {
@@ -364,9 +390,6 @@ export const CreateAnnouncementModal: React.FC<CreateAnnouncementModalProps> = (
           isOpen={isAuthOpen}
           onClose={() => {
             setIsAuthOpen(false);
-            if (pendingFormData && currentUser) {
-              handleFormSubmit(pendingFormData);
-            }
           }}
         />
       )}

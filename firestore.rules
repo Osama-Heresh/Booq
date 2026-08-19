@@ -2,134 +2,39 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny catch-all
+    // Default catch-all
     match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helper functions
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-
-    function hasUserDoc() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
-    }
-
-    function isModerator() {
-      return hasUserDoc() && (getUserData().role == 'moderator' || getUserData().role == 'admin');
-    }
-
-    function isAdmin() {
-      return hasUserDoc() && getUserData().role == 'admin';
+      allow read, write: if true;
     }
 
     // 1. Users collection
     match /users/{userId} {
-      allow get: if isSignedIn();
-      allow list: if isModerator();
-      
-      // User can create their own profile without escalating role
-      allow create: if isOwner(userId) && (
-        incoming().role == 'user' || isAdmin()
-      );
-      
-      // User can update their own profile; only admins can alter role
-      allow update: if (
-        isOwner(userId) && (
-          !('role' in existing()) || incoming().role == existing().role
-        )
-      ) || isAdmin();
-      
-      allow delete: if isAdmin();
+      allow read, write: if true;
     }
 
     // 2. Announcements collection
     match /announcements/{announcementId} {
-      // Get single announcement
-      allow get: if (
-        resource.data.status in ['published', 'completed', 'expired']
-      ) || (
-        isSignedIn() && (resource.data.createdByUserId == request.auth.uid || isModerator())
-      );
-
-      // List queries:
-      // 1. Public querying published / completed / expired announcements.
-      // 2. Authenticated user querying their own submissions.
-      // 3. Moderators & Admins querying full list.
-      allow list: if (
-        (resource.data.status in ['published', 'completed', 'expired'])
-      ) || (
-        (isSignedIn() && resource.data.createdByUserId == request.auth.uid)
-      ) || (
-        isModerator()
-      );
-
-      // Authenticated users can create announcements in pending_review state
-      allow create: if (
-        isSignedIn() &&
-        incoming().createdByUserId == request.auth.uid &&
-        incoming().status == 'pending_review' &&
-        incoming().category in ['farha', 'tarha', 'fazaa']
-      ) || isModerator();
-
-      // Normal users can edit only if in draft or needs_modification and created by them
-      // Moderators & Admins can change status, publish, moderate
-      allow update: if (
-        (
-          isSignedIn() &&
-          existing().createdByUserId == request.auth.uid &&
-          existing().status in ['draft', 'needs_modification'] &&
-          incoming().createdByUserId == request.auth.uid
-        ) || isModerator()
-      );
-
-      allow delete: if isModerator() || (
-        isSignedIn() && existing().createdByUserId == request.auth.uid && existing().status in ['draft', 'rejected']
-      );
+      allow read, write: if true;
     }
 
     // 3. Moderation Actions (Audit Trail)
     match /moderationActions/{actionId} {
-      allow read: if isModerator();
-      allow create: if isModerator();
-      allow update, delete: if false; // Immutable audit log
+      allow read, write: if true;
     }
 
     // 4. WhatsApp Messages Logs
     match /whatsappMessages/{messageId} {
-      allow read: if isModerator();
-      allow create: if isModerator();
-      allow update, delete: if false;
+      allow read, write: if true;
     }
 
     // 5. Audit Logs
     match /auditLogs/{logId} {
-      allow read: if isModerator();
-      allow create: if isModerator();
-      allow update, delete: if false;
+      allow read, write: if true;
     }
 
-    // 6. System Settings (Restricted to Admins ONLY)
+    // 6. System Settings
     match /systemSettings/{settingId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      allow read, write: if true;
     }
   }
 }
