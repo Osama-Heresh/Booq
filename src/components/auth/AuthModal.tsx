@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../../services/authContext';
-import { X, UserCheck, Phone, ShieldCheck, KeyRound, Sparkles, LogOut, CheckCircle2, AlertCircle, Zap } from 'lucide-react';
+import { X, UserCheck, Phone, ShieldCheck, KeyRound, LogOut, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -12,12 +12,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     currentUser,
     sendPhoneOtp,
     verifyPhoneOtp,
-    directPhoneRegister,
     logout,
-    changeCurrentUserRole,
-    switchDevPersona,
-    isDevDemoMode,
-    fallbackOtpCode,
   } = useAuth();
 
   const [phone, setPhone] = useState('');
@@ -28,67 +23,50 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
-    if (fallbackOtpCode && step === 'otp') {
-      setInfoMsg(`رمز التحقق السريع للمعاينة: ${fallbackOtpCode}`);
-    }
-  }, [fallbackOtpCode, step]);
-
   if (!isOpen) return null;
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setInfoMsg(null);
-    if (!phone || phone.trim().length < 8) {
+
+    const cleanPhone = phone.trim();
+    if (!cleanPhone || cleanPhone.length < 8) {
       setErrorMsg('يرجى كتابة رقم هاتف صالح (مثال: 0599123456 أو 0568123456)');
       return;
     }
+
     setIsSubmitting(true);
-    const res = await sendPhoneOtp(phone, 'recaptcha-auth-container');
+    const res = await sendPhoneOtp(cleanPhone, 'recaptcha-auth-container');
     setIsSubmitting(false);
+
     if (res.success) {
       setStep('otp');
-      if (res.simulatedCode) {
-        setInfoMsg(`تم إنشاء رمز التحقق الفوري للتجربة: ${res.simulatedCode}`);
-        setOtpCode(res.simulatedCode);
-      }
+      setOtpCode('');
+      setInfoMsg('تم إرسال رمز التحقق عبر رسالة نصية SMS إلى رقمك.');
     } else {
-      setErrorMsg(res.error || 'تعذر إرسال رمز التحقق');
-    }
-  };
-
-  const handleQuickRegister = async () => {
-    setErrorMsg(null);
-    setInfoMsg(null);
-    if (!phone || phone.trim().length < 8) {
-      setErrorMsg('يرجى كتابة رقم هاتفك أولاً');
-      return;
-    }
-    setIsSubmitting(true);
-    const res = await directPhoneRegister(phone, fullName || 'مواطن كريم');
-    setIsSubmitting(false);
-    if (res.success) {
-      onClose();
-    } else {
-      setErrorMsg(res.error || 'فشل التسجيل السريع');
+      setErrorMsg(res.error || 'تعذر إرسال رمز التحقق. يرجى التأكد من إعداد خدمة التحقق عبر الهاتف في Firebase.');
     }
   };
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-    if (!otpCode || otpCode.trim().length < 6) {
-      setErrorMsg('يرجى إدخال رمز التحقق المكون من 6 أرقام');
+
+    const cleanOtp = otpCode.trim();
+    if (!cleanOtp || cleanOtp.length !== 6) {
+      setErrorMsg('يرجى إدخال رمز التحقق المكون من 6 أرقام والمستلم عبر رسالة SMS');
       return;
     }
+
     setIsSubmitting(true);
-    const res = await verifyPhoneOtp(otpCode, fullName);
+    const res = await verifyPhoneOtp(cleanOtp, fullName);
     setIsSubmitting(false);
+
     if (res.success) {
       onClose();
     } else {
-      setErrorMsg(res.error || 'رمز التحقق غير صحيح');
+      setErrorMsg(res.error || 'رمز التحقق غير صحيح أو منتهي الصلاحية');
     }
   };
 
@@ -100,7 +78,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           <div className="flex items-center gap-2">
             <UserCheck className="w-5 h-5 text-[#F27D26]" />
             <h3 className="font-bold text-base text-[#0F172A]">
-              {currentUser ? 'حساب المستخدم والإشراف' : 'تسجيل الدخول / إنشاء حساب'}
+              {currentUser ? 'حساب المستخدم' : 'تسجيل الدخول عبر رقم الهاتف'}
             </h3>
           </div>
           <button
@@ -113,14 +91,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         <div className="p-5 sm:p-6 space-y-5">
-          {/* Currently Logged-in User Profile */}
+          {/* Logged in state */}
           {currentUser && (
             <div className="bg-[#FDFBF7] border border-[#E2E8F0] rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-[11px] text-[#64748B] font-bold block">المستخدم الحالي المسجل:</span>
                   <h4 className="font-black text-base text-[#0F172A]">{currentUser.fullName}</h4>
-                  <p className="text-xs text-[#64748B] font-mono">{currentUser.phone || 'حساب بدون رقم'}</p>
+                  <p className="text-xs text-[#64748B] font-mono">{currentUser.phone || 'بدون رقم'}</p>
                 </div>
                 <span className="px-2.5 py-1 text-xs font-bold rounded-lg bg-[#0F172A] text-white">
                   {currentUser.role === 'admin'
@@ -131,53 +109,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 </span>
               </div>
 
-              {/* Quick Role Switcher for Current User Account */}
-              <div className="pt-2 border-t border-[#E2E8F0] space-y-1.5">
-                <label className="text-[11px] font-bold text-[#64748B] block">تغيير دور هذا الحساب ({currentUser.fullName}):</label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => changeCurrentUserRole('user')}
-                    className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      currentUser.role === 'user'
-                        ? 'bg-[#0F172A] text-white shadow-xs'
-                        : 'bg-white border border-[#CBD5E1] text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    👤 مواطن
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => changeCurrentUserRole('moderator')}
-                    className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      currentUser.role === 'moderator'
-                        ? 'bg-[#0F172A] text-white shadow-xs'
-                        : 'bg-white border border-[#CBD5E1] text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    🛡️ مشرف
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => changeCurrentUserRole('admin')}
-                    className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      currentUser.role === 'admin'
-                        ? 'bg-[#0F172A] text-white shadow-xs'
-                        : 'bg-white border border-[#CBD5E1] text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    👑 مدير عام
-                  </button>
-                </div>
-              </div>
-
-              {isDevDemoMode && (
-                <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs p-2.5 rounded-xl flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>أنت تتصفح الآن في <strong>وضع المعاينة التجريبي</strong> (بيئة التطوير).</span>
-                </div>
-              )}
-
               <div className="pt-2 border-t border-[#E2E8F0] flex items-center justify-between text-xs">
                 <span className="text-[#64748B]">إجمالي إعلاناتك: {currentUser.announcementsCount || 0}</span>
                 <button
@@ -185,6 +116,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                   onClick={() => {
                     logout();
                     setStep('phone');
+                    setOtpCode('');
                   }}
                   className="text-rose-600 font-bold hover:underline flex items-center gap-1 cursor-pointer"
                 >
@@ -199,9 +131,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           {!currentUser && (
             <>
               {errorMsg && (
-                <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3 rounded-2xl flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
-                  <span>{errorMsg}</span>
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3 rounded-2xl flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
+                  <span className="leading-relaxed">{errorMsg}</span>
                 </div>
               )}
 
@@ -216,7 +148,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 <form onSubmit={handleSendOtp} className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-[#0F172A] mb-1.5">
-                      الاسم الكامل <span className="text-[#64748B] font-normal">(مطلوب عند أول تسجيل)</span>
+                      الاسم الكامل <span className="text-[#64748B] font-normal">(اختياري للمستخدمين الجدد)</span>
                     </label>
                     <input
                       type="text"
@@ -244,44 +176,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       <Phone className="w-4 h-4 text-[#64748B] absolute right-3 top-3 pointer-events-none" />
                     </div>
                     <p className="text-[11px] text-[#64748B] mt-1">
-                      يدعم أرقام فلسطين (059/056) والأردن (+962) والدولية
+                      يدعم أرقام فلسطين (059/056) والأردن (+962) وكافة المقدمات الدولية
                     </p>
                   </div>
 
-                  {/* Hidden container for Firebase Recaptcha */}
+                  {/* Hidden container for Firebase RecaptchaVerifier */}
                   <div id="recaptcha-auth-container" className="my-1"></div>
 
-                  <div className="space-y-2">
-                    <button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className="w-full bg-[#F27D26] hover:bg-[#D96818] text-white font-bold py-3 px-4 rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      {isSubmitting ? (
-                        <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></span>
-                      ) : (
-                        <>
-                          <span>إرسال رمز التحقق SMS</span>
-                          <KeyRound className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleQuickRegister}
-                      disabled={isSubmitting}
-                      className="w-full bg-[#0F172A] hover:bg-[#1E293B] text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-colors shadow-xs disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      <Zap className="w-3.5 h-3.5 text-amber-400" />
-                      <span>تسجيل ومتابعة فورية مباشرة برقم الهاتف ⚡</span>
-                    </button>
-                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full bg-[#F27D26] hover:bg-[#D96818] text-white font-bold py-3 px-4 rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    {isSubmitting ? (
+                      <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></span>
+                    ) : (
+                      <>
+                        <span>إرسال رمز التحقق SMS عبر Firebase</span>
+                        <KeyRound className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
                 </form>
               ) : (
                 <form onSubmit={handleVerifyOtp} className="space-y-4">
                   <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-3 text-xs text-amber-900 space-y-1">
-                    <p className="font-bold">رقم الهاتف المحدد:</p>
+                    <p className="font-bold">تم إرسال رمز التحقق SMS إلى الرقم:</p>
                     <p className="font-mono text-sm text-[#0F172A]" dir="ltr">
                       {phone}
                     </p>
@@ -289,7 +209,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
                   <div>
                     <label className="block text-xs font-bold text-[#0F172A] mb-1.5">
-                      رمز التحقق (6 أرقام) <span className="text-rose-500">*</span>
+                      رمز التحقق المستلم (6 أرقام) <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -297,33 +217,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       maxLength={6}
                       value={otpCode}
                       onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="1 2 3 4 5 6"
+                      placeholder=""
+                      autoFocus
                       required
                       className="w-full bg-[#F8FAFC] border border-[#CBD5E1] focus:border-[#F27D26] rounded-xl px-3.5 py-3 text-center text-xl tracking-widest font-mono outline-none transition-colors"
                     />
                   </div>
 
-                  {fallbackOtpCode && (
-                    <button
-                      type="button"
-                      onClick={() => setOtpCode(fallbackOtpCode)}
-                      className="w-full text-xs text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 py-2 rounded-xl font-bold transition-colors cursor-pointer"
-                    >
-                      اضغط لتعبئة رمز التحقق التجريبي ({fallbackOtpCode}) تلقائياً
-                    </button>
-                  )}
-
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setStep('phone')}
+                      onClick={() => {
+                        setStep('phone');
+                        setOtpCode('');
+                        setErrorMsg(null);
+                        setInfoMsg(null);
+                      }}
                       className="w-1/3 bg-[#F1F5F9] hover:bg-[#E2E8F0] text-[#475569] font-bold py-3 rounded-xl text-xs transition-colors cursor-pointer"
                     >
                       تغيير الرقم
                     </button>
                     <button
                       type="submit"
-                      disabled={isSubmitting}
+                      disabled={isSubmitting || otpCode.length !== 6}
                       className="flex-1 bg-[#10B981] hover:bg-[#059669] text-white font-bold py-3 rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
                     >
                       {isSubmitting ? (
@@ -331,7 +247,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       ) : (
                         <>
                           <CheckCircle2 className="w-4 h-4" />
-                          <span>تأكيد وتسجيل الدخول</span>
+                          <span>تأكيد الرمز وتسجيل الدخول</span>
                         </>
                       )}
                     </button>
@@ -340,57 +256,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               )}
             </>
           )}
-
-          {/* Explicit Development Persona Switcher (For Evaluation & Inspection) */}
-          <div className="pt-4 border-t border-[#E2E8F0] space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-[#64748B] flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                تبديل الأدوار للمعاينة والاختبار (Demo Personas):
-              </span>
-              <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold">
-                وضع تجريبي
-              </span>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  switchDevPersona('admin');
-                  onClose();
-                }}
-                className="p-2.5 rounded-xl border border-[#E2E8F0] bg-[#FDFBF7] hover:border-[#0F172A] hover:bg-[#F1F5F9] text-right transition-all cursor-pointer"
-              >
-                <span className="block font-black text-xs text-[#0F172A]">👑 مدير عام</span>
-                <span className="text-[10px] text-[#64748B] block mt-0.5">صلاحيات كاملة</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  switchDevPersona('moderator');
-                  onClose();
-                }}
-                className="p-2.5 rounded-xl border border-[#E2E8F0] bg-[#FDFBF7] hover:border-[#0F172A] hover:bg-[#F1F5F9] text-right transition-all cursor-pointer"
-              >
-                <span className="block font-black text-xs text-[#0F172A]">🛡️ مشرف</span>
-                <span className="text-[10px] text-[#64748B] block mt-0.5">تدقيق ونشر</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  switchDevPersona('user');
-                  onClose();
-                }}
-                className="p-2.5 rounded-xl border border-[#E2E8F0] bg-[#FDFBF7] hover:border-[#0F172A] hover:bg-[#F1F5F9] text-right transition-all cursor-pointer"
-              >
-                <span className="block font-black text-xs text-[#0F172A]">👤 مواطن</span>
-                <span className="text-[10px] text-[#64748B] block mt-0.5">نشر إعلانات</span>
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
